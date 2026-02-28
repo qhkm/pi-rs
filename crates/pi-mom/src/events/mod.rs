@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Event types for scheduled tasks
 #[derive(Debug, Clone, Serialize, Deserialize)]

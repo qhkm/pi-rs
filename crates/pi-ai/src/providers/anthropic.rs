@@ -6,20 +6,18 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::error::{PiAiError, Result};
 use crate::messages::types::{
-    AssistantMessage, Content, Message, StopReason, ThinkingBudgets, ThinkingLevel, Usage,
-    UserContent,
+    Content, Message, StopReason, ThinkingBudgets, ThinkingLevel, UserContent,
 };
 use crate::models::registry::Model;
 use crate::providers::traits::{
-    Context, LLMProvider, ProviderCapabilities, SimpleStreamOptions, StreamOptions, make_partial,
-    resolve_api_key,
+    make_partial, Context, LLMProvider, ProviderCapabilities, SimpleStreamOptions, StreamOptions,
 };
 use crate::streaming::events::StreamEvent;
 use crate::streaming::sse::sse_stream_from_response;
@@ -36,7 +34,10 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>, base_url: Option<&str>) -> Self {
         AnthropicProvider {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .expect("failed to build HTTP client"),
             api_key: api_key.into(),
             base_url: base_url.unwrap_or("https://api.anthropic.com").to_string(),
         }
@@ -61,10 +62,9 @@ fn build_anthropic_messages(messages: &[Message]) -> Value {
             Message::User(um) => {
                 let content = match &um.content {
                     UserContent::Text(t) => json!([{"type": "text", "text": t}]),
-                    UserContent::Blocks(blocks) => json!(blocks
-                        .iter()
-                        .map(content_to_anthropic)
-                        .collect::<Vec<_>>()),
+                    UserContent::Blocks(blocks) => {
+                        json!(blocks.iter().map(content_to_anthropic).collect::<Vec<_>>())
+                    }
                 };
                 result.push(json!({"role": "user", "content": content}));
             }
@@ -103,7 +103,11 @@ fn build_anthropic_messages(messages: &[Message]) -> Value {
 fn content_to_anthropic(c: &Content) -> Value {
     match c {
         Content::Text { text, .. } => json!({"type": "text", "text": text}),
-        Content::Thinking { thinking, thinking_signature, .. } => {
+        Content::Thinking {
+            thinking,
+            thinking_signature,
+            ..
+        } => {
             let mut v = json!({"type": "thinking", "thinking": thinking});
             if let Some(sig) = thinking_signature {
                 v["signature"] = json!(sig);
@@ -118,7 +122,12 @@ fn content_to_anthropic(c: &Content) -> Value {
                 "data": data,
             }
         }),
-        Content::ToolCall { id, name, arguments, .. } => json!({
+        Content::ToolCall {
+            id,
+            name,
+            arguments,
+            ..
+        } => json!({
             "type": "tool_use",
             "id": id,
             "name": name,
@@ -153,7 +162,6 @@ fn build_thinking_config(level: ThinkingLevel, budgets: &ThinkingBudgets) -> Val
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)]
 enum AnthropicSseEvent {
     MessageStart {
         message: AnthropicMessageStart,
@@ -182,9 +190,7 @@ enum AnthropicSseEvent {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicMessageStart {
-    #[allow(dead_code)]
     id: String,
-    #[allow(dead_code)]
     model: String,
     usage: AnthropicUsage,
 }
@@ -207,37 +213,20 @@ struct AnthropicUsageDelta {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)]
 enum AnthropicContentBlock {
-    Text {
-        text: String,
-    },
-    Thinking {
-        thinking: String,
-    },
+    Text { text: String },
+    Thinking { thinking: String },
     RedactedThinking {},
-    ToolUse {
-        id: String,
-        name: String,
-    },
+    ToolUse { id: String, name: String },
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)]
 enum AnthropicDelta {
-    TextDelta {
-        text: String,
-    },
-    ThinkingDelta {
-        thinking: String,
-    },
-    SignatureDelta {
-        signature: String,
-    },
-    InputJsonDelta {
-        partial_json: String,
-    },
+    TextDelta { text: String },
+    ThinkingDelta { thinking: String },
+    SignatureDelta { signature: String },
+    InputJsonDelta { partial_json: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -273,7 +262,12 @@ impl LLMProvider for AnthropicProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities { streaming: true, tool_calling: true, thinking: true, vision: true }
+        ProviderCapabilities {
+            streaming: true,
+            tool_calling: true,
+            thinking: true,
+            vision: true,
+        }
     }
 
     async fn stream(
@@ -283,7 +277,8 @@ impl LLMProvider for AnthropicProvider {
         options: &StreamOptions,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
-        self.stream_with_thinking(model, context, options, None, None, tx).await
+        self.stream_with_thinking(model, context, options, None, None, tx)
+            .await
     }
 
     async fn stream_simple(
@@ -402,7 +397,9 @@ impl AnthropicProvider {
 
         // Emit Start event.
         let _ = tx
-            .send(StreamEvent::Start { partial: partial.clone() })
+            .send(StreamEvent::Start {
+                partial: partial.clone(),
+            })
             .await;
 
         while let Some(sse_result) = sse.next().await {
@@ -421,7 +418,10 @@ impl AnthropicProvider {
             let event: AnthropicSseEvent = match serde_json::from_str(&sse_event.data) {
                 Ok(e) => e,
                 Err(e) => {
-                    debug!("Failed to parse Anthropic SSE event: {e} — data: {}", sse_event.data);
+                    debug!(
+                        "Failed to parse Anthropic SSE event: {e} — data: {}",
+                        sse_event.data
+                    );
                     continue;
                 }
             };
@@ -434,86 +434,87 @@ impl AnthropicProvider {
                     partial.usage.cache_write = message.usage.cache_creation_input_tokens;
                 }
 
-                AnthropicSseEvent::ContentBlockStart { index, content_block } => {
-                    match content_block {
-                        AnthropicContentBlock::Text { .. } => {
-                            partial.content.push(Content::Text {
-                                text: String::new(),
-                                text_signature: None,
-                            });
-                            blocks.insert(
-                                index,
-                                BlockState {
-                                    kind: BlockKind::Text,
-                                    text_buf: String::new(),
-                                    tool_id: String::new(),
-                                    tool_name: String::new(),
-                                    args_buf: String::new(),
-                                    thinking_sig: None,
-                                },
-                            );
-                            let _ = tx
-                                .send(StreamEvent::TextStart {
-                                    content_index: index,
-                                    partial: partial.clone(),
-                                })
-                                .await;
-                        }
-                        AnthropicContentBlock::Thinking { .. }
-                        | AnthropicContentBlock::RedactedThinking {} => {
-                            partial.content.push(Content::Thinking {
-                                thinking: String::new(),
-                                thinking_signature: None,
-                                redacted: matches!(
-                                    content_block,
-                                    AnthropicContentBlock::RedactedThinking {}
-                                ),
-                            });
-                            blocks.insert(
-                                index,
-                                BlockState {
-                                    kind: BlockKind::Thinking,
-                                    text_buf: String::new(),
-                                    tool_id: String::new(),
-                                    tool_name: String::new(),
-                                    args_buf: String::new(),
-                                    thinking_sig: None,
-                                },
-                            );
-                            let _ = tx
-                                .send(StreamEvent::ThinkingStart {
-                                    content_index: index,
-                                    partial: partial.clone(),
-                                })
-                                .await;
-                        }
-                        AnthropicContentBlock::ToolUse { id, name } => {
-                            partial.content.push(Content::ToolCall {
-                                id: id.clone(),
-                                name: name.clone(),
-                                arguments: Value::Object(Default::default()),
-                                thought_signature: None,
-                            });
-                            blocks.insert(
-                                index,
-                                BlockState {
-                                    kind: BlockKind::ToolUse,
-                                    text_buf: String::new(),
-                                    tool_id: id,
-                                    tool_name: name,
-                                    args_buf: String::new(),
-                                    thinking_sig: None,
-                                },
-                            );
-                            let _ = tx
-                                .send(StreamEvent::ToolCallStart {
-                                    content_index: index,
-                                    partial: partial.clone(),
-                                })
-                                .await;
-                        }
+                AnthropicSseEvent::ContentBlockStart {
+                    index,
+                    content_block,
+                } => match content_block {
+                    AnthropicContentBlock::Text { .. } => {
+                        partial.content.push(Content::Text {
+                            text: String::new(),
+                            text_signature: None,
+                        });
+                        blocks.insert(
+                            index,
+                            BlockState {
+                                kind: BlockKind::Text,
+                                text_buf: String::new(),
+                                tool_id: String::new(),
+                                tool_name: String::new(),
+                                args_buf: String::new(),
+                                thinking_sig: None,
+                            },
+                        );
+                        let _ = tx
+                            .send(StreamEvent::TextStart {
+                                content_index: index,
+                                partial: partial.clone(),
+                            })
+                            .await;
                     }
-                }
+                    AnthropicContentBlock::Thinking { .. }
+                    | AnthropicContentBlock::RedactedThinking {} => {
+                        partial.content.push(Content::Thinking {
+                            thinking: String::new(),
+                            thinking_signature: None,
+                            redacted: matches!(
+                                content_block,
+                                AnthropicContentBlock::RedactedThinking {}
+                            ),
+                        });
+                        blocks.insert(
+                            index,
+                            BlockState {
+                                kind: BlockKind::Thinking,
+                                text_buf: String::new(),
+                                tool_id: String::new(),
+                                tool_name: String::new(),
+                                args_buf: String::new(),
+                                thinking_sig: None,
+                            },
+                        );
+                        let _ = tx
+                            .send(StreamEvent::ThinkingStart {
+                                content_index: index,
+                                partial: partial.clone(),
+                            })
+                            .await;
+                    }
+                    AnthropicContentBlock::ToolUse { id, name } => {
+                        partial.content.push(Content::ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments: Value::Object(Default::default()),
+                            thought_signature: None,
+                        });
+                        blocks.insert(
+                            index,
+                            BlockState {
+                                kind: BlockKind::ToolUse,
+                                text_buf: String::new(),
+                                tool_id: id,
+                                tool_name: name,
+                                args_buf: String::new(),
+                                thinking_sig: None,
+                            },
+                        );
+                        let _ = tx
+                            .send(StreamEvent::ToolCallStart {
+                                content_index: index,
+                                partial: partial.clone(),
+                            })
+                            .await;
+                    }
+                },
 
                 AnthropicSseEvent::ContentBlockDelta { index, delta } => {
                     let block = match blocks.get_mut(&index) {
@@ -525,8 +526,9 @@ impl AnthropicProvider {
                         AnthropicDelta::TextDelta { text } => {
                             block.text_buf.push_str(&text);
                             // Update the content block in partial.
-                            if let Some(Content::Text { text: ref mut t, .. }) =
-                                partial.content.get_mut(index)
+                            if let Some(Content::Text {
+                                text: ref mut t, ..
+                            }) = partial.content.get_mut(index)
                             {
                                 *t = block.text_buf.clone();
                             }
@@ -534,14 +536,15 @@ impl AnthropicProvider {
                                 .send(StreamEvent::TextDelta {
                                     content_index: index,
                                     delta: text,
-                                    partial: partial.clone(),
                                 })
                                 .await;
                         }
                         AnthropicDelta::ThinkingDelta { thinking } => {
                             block.text_buf.push_str(&thinking);
-                            if let Some(Content::Thinking { thinking: ref mut t, .. }) =
-                                partial.content.get_mut(index)
+                            if let Some(Content::Thinking {
+                                thinking: ref mut t,
+                                ..
+                            }) = partial.content.get_mut(index)
                             {
                                 *t = block.text_buf.clone();
                             }
@@ -549,7 +552,6 @@ impl AnthropicProvider {
                                 .send(StreamEvent::ThinkingDelta {
                                     content_index: index,
                                     delta: thinking,
-                                    partial: partial.clone(),
                                 })
                                 .await;
                         }
@@ -558,8 +560,10 @@ impl AnthropicProvider {
                         }
                         AnthropicDelta::InputJsonDelta { partial_json } => {
                             block.args_buf.push_str(&partial_json);
-                            if let Some(Content::ToolCall { arguments: ref mut a, .. }) =
-                                partial.content.get_mut(index)
+                            if let Some(Content::ToolCall {
+                                arguments: ref mut a,
+                                ..
+                            }) = partial.content.get_mut(index)
                             {
                                 *a = serde_json::from_str(&block.args_buf)
                                     .unwrap_or(Value::String(block.args_buf.clone()));
@@ -568,7 +572,6 @@ impl AnthropicProvider {
                                 .send(StreamEvent::ToolCallDelta {
                                     content_index: index,
                                     delta: partial_json,
-                                    partial: partial.clone(),
                                 })
                                 .await;
                         }
@@ -619,8 +622,10 @@ impl AnthropicProvider {
                                 arguments: args.clone(),
                             };
                             // Final update to the content block.
-                            if let Some(Content::ToolCall { arguments: ref mut a, .. }) =
-                                partial.content.get_mut(index)
+                            if let Some(Content::ToolCall {
+                                arguments: ref mut a,
+                                ..
+                            }) = partial.content.get_mut(index)
                             {
                                 *a = args;
                             }
@@ -691,7 +696,10 @@ impl AnthropicProvider {
         // Stream ended without MessageStop — treat as closed.
         partial.usage = model.annotate_usage(partial.usage.clone());
         let _ = tx
-            .send(StreamEvent::Done { reason: partial.stop_reason.clone(), message: partial })
+            .send(StreamEvent::Done {
+                reason: partial.stop_reason.clone(),
+                message: partial,
+            })
             .await;
 
         Ok(())

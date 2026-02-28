@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Supported attachment types
 #[derive(Debug, Clone, Serialize, Deserialize)]

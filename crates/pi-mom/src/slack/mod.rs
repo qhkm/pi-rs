@@ -1,7 +1,7 @@
-pub mod socket_mode;
 pub mod events;
+pub mod socket_mode;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// A Slack event received by the bot
 #[derive(Debug, Clone, Serialize, Deserialize)]

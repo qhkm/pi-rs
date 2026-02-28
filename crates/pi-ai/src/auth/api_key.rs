@@ -63,11 +63,31 @@ pub fn is_valid_api_key(key: &str) -> bool {
     !placeholders.iter().any(|p| lower.contains(p))
 }
 
+/// Redact an API key for safe inclusion in error messages and logs.
+///
+/// Shows the first 4 and last 4 characters separated by `***`.
+/// For keys shorter than 12 characters the entire value is replaced with `***`.
+///
+/// # Examples
+///
+/// ```
+/// use pi_ai::auth::api_key::redact_key;
+///
+/// assert_eq!(redact_key("sk-proj-abc123456789xyz"), "sk-p***9xyz");
+/// assert_eq!(redact_key("short"), "***");
+/// ```
+pub fn redact_key(key: &str) -> String {
+    if key.len() < 12 {
+        "***".to_string()
+    } else {
+        let prefix = &key[..4];
+        let suffix = &key[key.len() - 4..];
+        format!("{prefix}***{suffix}")
+    }
+}
+
 /// Validate and return the API key, or return an auth error.
-pub fn require_api_key(
-    provider: &str,
-    options_key: Option<&str>,
-) -> crate::error::Result<String> {
+pub fn require_api_key(provider: &str, options_key: Option<&str>) -> crate::error::Result<String> {
     let key = options_key
         .map(|k| k.to_string())
         .or_else(|| get_api_key(provider));
@@ -75,7 +95,8 @@ pub fn require_api_key(
     match key {
         Some(k) if is_valid_api_key(&k) => Ok(k),
         Some(k) => Err(crate::error::PiAiError::Auth(format!(
-            "API key for provider '{provider}' appears to be a placeholder: '{k}'"
+            "API key for provider '{provider}' appears to be a placeholder: '{}'",
+            redact_key(&k)
         ))),
         None => Err(crate::error::PiAiError::Auth(format!(
             "No API key found for provider '{provider}'. \
@@ -94,5 +115,44 @@ mod tests {
         assert!(!is_valid_api_key(""));
         assert!(!is_valid_api_key("your-api-key"));
         assert!(!is_valid_api_key("xxx"));
+    }
+
+    #[test]
+    fn test_redact_key_long_key() {
+        // Typical OpenAI-style key: first 4 + *** + last 4
+        assert_eq!(redact_key("sk-proj-abc123456789xyz"), "sk-p***9xyz");
+    }
+
+    #[test]
+    fn test_redact_key_exactly_12_chars() {
+        // 12 characters is the minimum to show prefix/suffix
+        assert_eq!(redact_key("abcd12345678"), "abcd***5678");
+    }
+
+    #[test]
+    fn test_redact_key_11_chars_shows_stars_only() {
+        // 11 characters — below threshold, full redaction
+        assert_eq!(redact_key("abcd1234567"), "***");
+    }
+
+    #[test]
+    fn test_redact_key_short_key() {
+        assert_eq!(redact_key("short"), "***");
+    }
+
+    #[test]
+    fn test_redact_key_empty() {
+        assert_eq!(redact_key(""), "***");
+    }
+
+    #[test]
+    fn test_redact_key_does_not_expose_middle() {
+        let key = "sk-proj-SUPERSECRETMIDDLEPART-end";
+        let redacted = redact_key(key);
+        assert!(redacted.starts_with("sk-p"));
+        assert!(redacted.ends_with("-end"));
+        assert!(redacted.contains("***"));
+        // Middle must not appear in the redacted string
+        assert!(!redacted.contains("SUPERSECRETMIDDLEPART"));
     }
 }

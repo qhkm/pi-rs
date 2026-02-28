@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 // ─── API identifier ───────────────────────────────────────────────────────────
 
@@ -106,15 +106,25 @@ pub enum Content {
 
 impl Content {
     pub fn text(text: impl Into<String>) -> Self {
-        Content::Text { text: text.into(), text_signature: None }
+        Content::Text {
+            text: text.into(),
+            text_signature: None,
+        }
     }
 
     pub fn thinking(thinking: impl Into<String>) -> Self {
-        Content::Thinking { thinking: thinking.into(), thinking_signature: None, redacted: false }
+        Content::Thinking {
+            thinking: thinking.into(),
+            thinking_signature: None,
+            redacted: false,
+        }
     }
 
     pub fn image(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
-        Content::Image { data: data.into(), mime_type: mime_type.into() }
+        Content::Image {
+            data: data.into(),
+            mime_type: mime_type.into(),
+        }
     }
 
     pub fn tool_call(
@@ -122,7 +132,12 @@ impl Content {
         name: impl Into<String>,
         arguments: serde_json::Value,
     ) -> Self {
-        Content::ToolCall { id: id.into(), name: name.into(), arguments, thought_signature: None }
+        Content::ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+            thought_signature: None,
+        }
     }
 
     pub fn as_text(&self) -> Option<&str> {
@@ -303,10 +318,7 @@ impl AssistantMessage {
     }
 
     pub fn tool_calls(&self) -> Vec<&Content> {
-        self.content
-            .iter()
-            .filter(|c| c.is_tool_call())
-            .collect()
+        self.content.iter().filter(|c| c.is_tool_call()).collect()
     }
 
     pub fn has_tool_calls(&self) -> bool {

@@ -8,7 +8,10 @@ pub struct SocketModeClient {
 
 impl SocketModeClient {
     pub fn new(app_token: String, bot_token: String) -> Self {
-        Self { app_token, bot_token }
+        Self {
+            app_token,
+            bot_token,
+        }
     }
 
     /// Connect and start listening for events

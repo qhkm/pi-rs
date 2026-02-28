@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Extension manifest loaded from a directory
 #[derive(Debug, Clone, Serialize, Deserialize)]

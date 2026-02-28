@@ -6,18 +6,16 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::error::{PiAiError, Result};
-use crate::messages::types::{
-    AssistantMessage, Content, Message, StopReason, Usage, UserContent,
-};
+use crate::messages::types::{Content, Message, StopReason, ThinkingLevel, UserContent};
 use crate::models::registry::Model;
 use crate::providers::traits::{
-    Context, LLMProvider, ProviderCapabilities, StreamOptions, make_partial, resolve_api_key,
+    make_partial, Context, LLMProvider, ProviderCapabilities, SimpleStreamOptions, StreamOptions,
 };
 use crate::streaming::events::StreamEvent;
 use crate::streaming::sse::sse_stream_from_response;
@@ -87,13 +85,12 @@ pub struct OpenAIProvider {
 }
 
 impl OpenAIProvider {
-    pub fn new(
-        api_key: impl Into<String>,
-        base_url: Option<&str>,
-        compat: OpenAICompat,
-    ) -> Self {
+    pub fn new(api_key: impl Into<String>, base_url: Option<&str>, compat: OpenAICompat) -> Self {
         OpenAIProvider {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .expect("failed to build HTTP client"),
             api_key: api_key.into(),
             base_url: base_url.unwrap_or("https://api.openai.com").to_string(),
             compat,
@@ -101,7 +98,10 @@ impl OpenAIProvider {
     }
 
     fn api_key_for(&self, options: &StreamOptions) -> String {
-        options.api_key.clone().unwrap_or_else(|| self.api_key.clone())
+        options
+            .api_key
+            .clone()
+            .unwrap_or_else(|| self.api_key.clone())
     }
 }
 
@@ -142,7 +142,13 @@ fn build_openai_messages(messages: &[Message], compat: &OpenAICompat) -> Value {
                     .content
                     .iter()
                     .filter_map(|c| {
-                        if let Content::ToolCall { id, name, arguments, .. } = c {
+                        if let Content::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } = c
+                        {
                             Some(json!({
                                 "id": id,
                                 "type": "function",
@@ -299,7 +305,12 @@ impl LLMProvider for OpenAIProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities { streaming: true, tool_calling: true, thinking: false, vision: true }
+        ProviderCapabilities {
+            streaming: true,
+            tool_calling: true,
+            thinking: false,
+            vision: true,
+        }
     }
 
     async fn stream(
@@ -310,8 +321,21 @@ impl LLMProvider for OpenAIProvider {
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
         let api_key = self.api_key_for(options);
-        let messages_value = build_openai_messages(&context.messages, &self.compat);
+        let mut messages_value = build_openai_messages(&context.messages, &self.compat);
         let max_tokens = options.max_tokens.unwrap_or(model.max_tokens);
+
+        // Prepend system prompt if provided.
+        if let Some(sp) = &context.system_prompt {
+            let role = if self.compat.supports_developer_role {
+                "developer"
+            } else {
+                "system"
+            };
+            let system_msg = json!({"role": role, "content": sp});
+            if let Some(arr) = messages_value.as_array_mut() {
+                arr.insert(0, system_msg);
+            }
+        }
 
         let max_tokens_key = match self.compat.max_tokens_field {
             MaxTokensField::MaxCompletionTokens => "max_completion_tokens",
@@ -358,26 +382,131 @@ impl LLMProvider for OpenAIProvider {
             });
         }
 
-        // ── SSE parsing state ───────────────────────────────────────────
+        self.parse_sse_response(response, model, tx).await
+    }
 
-        let mut partial = make_partial(model);
-        let mut sse = sse_stream_from_response(response);
+    async fn stream_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: &SimpleStreamOptions,
+        tx: mpsc::Sender<StreamEvent>,
+    ) -> Result<()> {
+        // If reasoning is requested and this provider supports it, inject
+        // `reasoning_effort` into the request body then stream normally.
+        if let (Some(level), true) = (options.reasoning, self.compat.supports_reasoning_effort) {
+            let api_key = self.api_key_for(&options.base);
+            let mut messages_value = build_openai_messages(&context.messages, &self.compat);
+            let max_tokens = options.base.max_tokens.unwrap_or(model.max_tokens);
 
-        // Tool call accumulation: index → (id, name, args_buf, content_index)
+            // Prepend system prompt if provided.
+            if let Some(sp) = &context.system_prompt {
+                let role = if self.compat.supports_developer_role {
+                    "developer"
+                } else {
+                    "system"
+                };
+                let system_msg = json!({"role": role, "content": sp});
+                if let Some(arr) = messages_value.as_array_mut() {
+                    arr.insert(0, system_msg);
+                }
+            }
+
+            let max_tokens_key = match self.compat.max_tokens_field {
+                MaxTokensField::MaxCompletionTokens => "max_completion_tokens",
+                MaxTokensField::MaxTokens => "max_tokens",
+            };
+
+            let reasoning_effort = match level {
+                ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
+                ThinkingLevel::Medium => "medium",
+                ThinkingLevel::High | ThinkingLevel::XHigh => "high",
+            };
+
+            let mut body = json!({
+                "model": model.id,
+                "messages": messages_value,
+                max_tokens_key: max_tokens,
+                "stream": true,
+                "stream_options": { "include_usage": true },
+                "reasoning_effort": reasoning_effort,
+            });
+
+            if let Some(temp) = options.base.temperature {
+                body["temperature"] = json!(temp);
+            }
+
+            if !context.tools.is_empty() {
+                body["tools"] = build_openai_tools(&context.tools);
+            }
+
+            let mut req_builder = self
+                .client
+                .post(format!("{}/v1/chat/completions", self.base_url))
+                .header("authorization", format!("Bearer {api_key}"))
+                .header("content-type", "application/json")
+                .json(&body);
+
+            if let Some(extra) = &options.base.headers {
+                for (k, v) in extra {
+                    req_builder = req_builder.header(k, v);
+                }
+            }
+
+            let response = req_builder.send().await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                return Err(PiAiError::Provider {
+                    provider: "openai".into(),
+                    message: format!("HTTP {status}: {text}"),
+                });
+            }
+
+            // Reuse the same SSE parsing logic from stream() by delegating to
+            // a fresh stream() call built from the base options — but since we
+            // already sent the request above, we need to parse the response here.
+            // Delegate SSE parsing to a helper that takes a pre-built response.
+            return self.parse_sse_response(response, model, tx).await;
+        }
+
+        // No reasoning requested — delegate to the base stream().
+        self.stream(model, context, &options.base, tx).await
+    }
+}
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
+
+impl OpenAIProvider {
+    /// Parse an already-received SSE response and emit stream events.
+    ///
+    /// Extracted so both `stream()` and `stream_simple()` (with reasoning) can
+    /// share the same parsing logic without code duplication.
+    async fn parse_sse_response(
+        &self,
+        response: reqwest::Response,
+        model: &Model,
+        tx: mpsc::Sender<StreamEvent>,
+    ) -> Result<()> {
         struct ToolState {
             id: String,
             name: String,
             args_buf: String,
             content_index: usize,
         }
-        let mut tool_states: HashMap<usize, ToolState> = HashMap::new();
 
-        // Text content block tracking
+        let mut partial = make_partial(model);
+        let mut sse = sse_stream_from_response(response);
+        let mut tool_states: HashMap<usize, ToolState> = HashMap::new();
         let mut text_content_index: Option<usize> = None;
-        // Thinking content block tracking
         let mut thinking_content_index: Option<usize> = None;
 
-        let _ = tx.send(StreamEvent::Start { partial: partial.clone() }).await;
+        let _ = tx
+            .send(StreamEvent::Start {
+                partial: partial.clone(),
+            })
+            .await;
 
         while let Some(sse_result) = sse.next().await {
             let sse_event = match sse_result {
@@ -399,12 +528,14 @@ impl LLMProvider for OpenAIProvider {
             let chunk: ChatCompletionChunk = match serde_json::from_str(&sse_event.data) {
                 Ok(c) => c,
                 Err(e) => {
-                    debug!("Failed to parse OpenAI chunk: {e} — data: {}", sse_event.data);
+                    debug!(
+                        "Failed to parse OpenAI chunk: {e} — data: {}",
+                        sse_event.data
+                    );
                     continue;
                 }
             };
 
-            // Usage data (last chunk from OpenAI).
             if let Some(usage) = chunk.usage {
                 partial.usage.input = usage.prompt_tokens;
                 partial.usage.output = usage.completion_tokens;
@@ -415,7 +546,6 @@ impl LLMProvider for OpenAIProvider {
                 let delta = choice.delta;
                 let finish_reason = choice.finish_reason.as_deref();
 
-                // ── Thinking / reasoning content ────────────────────────
                 if let Some(thinking_delta) = &delta.reasoning_content {
                     if !thinking_delta.is_empty() {
                         let ci = match thinking_content_index {
@@ -437,9 +567,10 @@ impl LLMProvider for OpenAIProvider {
                                 i
                             }
                         };
-
-                        if let Some(Content::Thinking { thinking: ref mut t, .. }) =
-                            partial.content.get_mut(ci)
+                        if let Some(Content::Thinking {
+                            thinking: ref mut t,
+                            ..
+                        }) = partial.content.get_mut(ci)
                         {
                             t.push_str(thinking_delta);
                         }
@@ -447,13 +578,11 @@ impl LLMProvider for OpenAIProvider {
                             .send(StreamEvent::ThinkingDelta {
                                 content_index: ci,
                                 delta: thinking_delta.clone(),
-                                partial: partial.clone(),
                             })
                             .await;
                     }
                 }
 
-                // ── Text content ─────────────────────────────────────────
                 if let Some(text_delta) = &delta.content {
                     if !text_delta.is_empty() {
                         let ci = match text_content_index {
@@ -474,9 +603,9 @@ impl LLMProvider for OpenAIProvider {
                                 i
                             }
                         };
-
-                        if let Some(Content::Text { text: ref mut t, .. }) =
-                            partial.content.get_mut(ci)
+                        if let Some(Content::Text {
+                            text: ref mut t, ..
+                        }) = partial.content.get_mut(ci)
                         {
                             t.push_str(text_delta);
                         }
@@ -484,17 +613,14 @@ impl LLMProvider for OpenAIProvider {
                             .send(StreamEvent::TextDelta {
                                 content_index: ci,
                                 delta: text_delta.clone(),
-                                partial: partial.clone(),
                             })
                             .await;
                     }
                 }
 
-                // ── Tool call deltas ─────────────────────────────────────
                 if let Some(tool_call_chunks) = delta.tool_calls {
                     for tc_chunk in tool_call_chunks {
                         let tc_idx = tc_chunk.index;
-
                         let state = tool_states.entry(tc_idx).or_insert_with(|| {
                             let content_index = partial.content.len();
                             partial.content.push(Content::ToolCall {
@@ -520,7 +646,6 @@ impl LLMProvider for OpenAIProvider {
                                 state.name = name;
                             }
                             if let Some(args) = func.arguments {
-                                // First chunk: emit ToolCallStart.
                                 if state.args_buf.is_empty() && !args.is_empty() {
                                     let ci = state.content_index;
                                     if let Some(Content::ToolCall {
@@ -539,11 +664,12 @@ impl LLMProvider for OpenAIProvider {
                                         })
                                         .await;
                                 }
-
                                 let ci = state.content_index;
                                 state.args_buf.push_str(&args);
-                                if let Some(Content::ToolCall { arguments: ref mut a, .. }) =
-                                    partial.content.get_mut(ci)
+                                if let Some(Content::ToolCall {
+                                    arguments: ref mut a,
+                                    ..
+                                }) = partial.content.get_mut(ci)
                                 {
                                     *a = serde_json::from_str(&state.args_buf)
                                         .unwrap_or(Value::String(state.args_buf.clone()));
@@ -552,7 +678,6 @@ impl LLMProvider for OpenAIProvider {
                                     .send(StreamEvent::ToolCallDelta {
                                         content_index: ci,
                                         delta: args,
-                                        partial: partial.clone(),
                                     })
                                     .await;
                             }
@@ -560,11 +685,9 @@ impl LLMProvider for OpenAIProvider {
                     }
                 }
 
-                // ── Finish reason ─────────────────────────────────────────
                 if let Some(reason) = finish_reason {
                     partial.stop_reason = map_stop_reason(reason);
 
-                    // Emit TextEnd if we had text.
                     if let Some(ci) = text_content_index {
                         let full_text = partial
                             .content
@@ -586,7 +709,6 @@ impl LLMProvider for OpenAIProvider {
                             .await;
                     }
 
-                    // Emit ThinkingEnd if we had thinking.
                     if let Some(ci) = thinking_content_index {
                         let full_thinking = partial
                             .content
@@ -608,7 +730,6 @@ impl LLMProvider for OpenAIProvider {
                             .await;
                     }
 
-                    // Emit ToolCallEnd for all accumulated tool calls.
                     let states: Vec<ToolState> = tool_states.drain().map(|(_, v)| v).collect();
                     for state in states {
                         let args = serde_json::from_str(&state.args_buf)
@@ -630,17 +751,22 @@ impl LLMProvider for OpenAIProvider {
             }
         }
 
-        // Finalise cost.
         partial.usage = model.annotate_usage(partial.usage.clone());
 
         let reason = partial.stop_reason.clone();
         if reason == StopReason::Error {
             let _ = tx
-                .send(StreamEvent::Error { reason, error: partial })
+                .send(StreamEvent::Error {
+                    reason,
+                    error: partial,
+                })
                 .await;
         } else {
             let _ = tx
-                .send(StreamEvent::Done { reason, message: partial })
+                .send(StreamEvent::Done {
+                    reason,
+                    message: partial,
+                })
                 .await;
         }
 

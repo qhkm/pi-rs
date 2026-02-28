@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{mpsc, watch, RwLock};
 
 use pi_ai::{LLMProvider, Model, ThinkingLevel};
 
@@ -29,7 +29,8 @@ pub struct AgentConfig {
 }
 
 /// Current state of the agent
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentState {
     /// Agent is idle, waiting for input
     Idle,
@@ -57,11 +58,16 @@ pub struct AgentSharedState {
     pub abort_rx: watch::Receiver<bool>,
     /// Cumulative usage
     pub total_usage: RwLock<pi_ai::Usage>,
+    /// Approval channel sender — external callers send (call_id, approved) decisions here
+    pub approval_tx: mpsc::Sender<(String, bool)>,
+    /// Approval channel receiver — the agent loop reads from this to unblock pending approvals
+    pub approval_rx: tokio::sync::Mutex<mpsc::Receiver<(String, bool)>>,
 }
 
 impl AgentSharedState {
     pub fn new() -> Self {
         let (abort_tx, abort_rx) = watch::channel(false);
+        let (approval_tx, approval_rx) = mpsc::channel(16);
         Self {
             state: RwLock::new(AgentState::Idle),
             tools: RwLock::new(ToolRegistry::new()),
@@ -69,6 +75,8 @@ impl AgentSharedState {
             abort_tx,
             abort_rx,
             total_usage: RwLock::new(pi_ai::Usage::default()),
+            approval_tx,
+            approval_rx: tokio::sync::Mutex::new(approval_rx),
         }
     }
 }

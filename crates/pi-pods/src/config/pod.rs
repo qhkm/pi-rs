@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -29,7 +29,9 @@ pub struct Pod {
     pub vllm_version: String,
 }
 
-fn default_vllm_version() -> String { "release".to_string() }
+fn default_vllm_version() -> String {
+    "release".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -68,7 +70,8 @@ impl Config {
     }
 
     pub fn active_pod(&self) -> Option<(&str, &Pod)> {
-        self.active.as_deref()
+        self.active
+            .as_deref()
             .and_then(|name| self.pods.get(name).map(|pod| (name, pod)))
     }
 }

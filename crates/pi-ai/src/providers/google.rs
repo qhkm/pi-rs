@@ -11,12 +11,10 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::error::{PiAiError, Result};
-use crate::messages::types::{
-    AssistantMessage, Content, Message, StopReason, Usage, UserContent,
-};
+use crate::messages::types::{Content, Message, StopReason, UserContent};
 use crate::models::registry::Model;
 use crate::providers::traits::{
-    Context, LLMProvider, ProviderCapabilities, StreamOptions, make_partial,
+    make_partial, Context, LLMProvider, ProviderCapabilities, StreamOptions,
 };
 use crate::streaming::events::StreamEvent;
 use crate::streaming::sse::sse_stream_from_response;
@@ -33,7 +31,10 @@ pub struct GoogleProvider {
 impl GoogleProvider {
     pub fn new(api_key: impl Into<String>, base_url: Option<&str>) -> Self {
         GoogleProvider {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .expect("failed to build HTTP client"),
             api_key: api_key.into(),
             base_url: base_url
                 .unwrap_or("https://generativelanguage.googleapis.com")
@@ -42,7 +43,10 @@ impl GoogleProvider {
     }
 
     fn api_key_for(&self, options: &StreamOptions) -> String {
-        options.api_key.clone().unwrap_or_else(|| self.api_key.clone())
+        options
+            .api_key
+            .clone()
+            .unwrap_or_else(|| self.api_key.clone())
     }
 }
 
@@ -56,15 +60,18 @@ fn build_gemini_contents(messages: &[Message]) -> Value {
             Message::User(um) => {
                 let parts = match &um.content {
                     UserContent::Text(t) => vec![json!({"text": t})],
-                    UserContent::Blocks(blocks) => blocks
-                        .iter()
-                        .filter_map(content_to_gemini_part)
-                        .collect(),
+                    UserContent::Blocks(blocks) => {
+                        blocks.iter().filter_map(content_to_gemini_part).collect()
+                    }
                 };
                 result.push(json!({"role": "user", "parts": parts}));
             }
             Message::Assistant(am) => {
-                let parts: Vec<Value> = am.content.iter().filter_map(content_to_gemini_part).collect();
+                let parts: Vec<Value> = am
+                    .content
+                    .iter()
+                    .filter_map(content_to_gemini_part)
+                    .collect();
                 result.push(json!({"role": "model", "parts": parts}));
             }
             Message::ToolResult(tr) => {
@@ -73,7 +80,9 @@ fn build_gemini_contents(messages: &[Message]) -> Value {
                     .iter()
                     .find_map(|c| {
                         if let Content::Text { text, .. } = c {
-                            serde_json::from_str(text).ok().or_else(|| Some(json!({"output": text})))
+                            serde_json::from_str(text)
+                                .ok()
+                                .or_else(|| Some(json!({"output": text})))
                         } else {
                             None
                         }
@@ -104,7 +113,12 @@ fn content_to_gemini_part(c: &Content) -> Option<Value> {
                 "data": data,
             }
         })),
-        Content::ToolCall { id: _, name, arguments, .. } => Some(json!({
+        Content::ToolCall {
+            id: _,
+            name,
+            arguments,
+            ..
+        } => Some(json!({
             "functionCall": {
                 "name": name,
                 "args": arguments,
@@ -206,7 +220,12 @@ impl LLMProvider for GoogleProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities { streaming: true, tool_calling: true, thinking: true, vision: true }
+        ProviderCapabilities {
+            streaming: true,
+            tool_calling: true,
+            thinking: true,
+            vision: true,
+        }
     }
 
     async fn stream(
@@ -243,14 +262,15 @@ impl LLMProvider for GoogleProvider {
         }
 
         let url = format!(
-            "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.base_url, model.id, api_key
+            "{}/v1beta/models/{}:streamGenerateContent?alt=sse",
+            self.base_url, model.id
         );
 
         let mut req_builder = self
             .client
             .post(&url)
             .header("content-type", "application/json")
+            .header("x-goog-api-key", &api_key)
             .json(&body);
 
         if let Some(extra) = &options.headers {
@@ -288,7 +308,11 @@ impl LLMProvider for GoogleProvider {
         // sequential tool call ID counter (Gemini doesn't provide IDs)
         let mut tool_id_counter = 0u64;
 
-        let _ = tx.send(StreamEvent::Start { partial: partial.clone() }).await;
+        let _ = tx
+            .send(StreamEvent::Start {
+                partial: partial.clone(),
+            })
+            .await;
 
         while let Some(sse_result) = sse.next().await {
             let sse_event = match sse_result {
@@ -306,7 +330,10 @@ impl LLMProvider for GoogleProvider {
             let resp: GenerateContentResponse = match serde_json::from_str(&sse_event.data) {
                 Ok(r) => r,
                 Err(e) => {
-                    debug!("Failed to parse Gemini response: {e} — data: {}", sse_event.data);
+                    debug!(
+                        "Failed to parse Gemini response: {e} — data: {}",
+                        sse_event.data
+                    );
                     continue;
                 }
             };
@@ -350,8 +377,10 @@ impl LLMProvider for GoogleProvider {
                                         i
                                     }
                                 };
-                                if let Some(Content::Thinking { thinking: ref mut t, .. }) =
-                                    partial.content.get_mut(ci)
+                                if let Some(Content::Thinking {
+                                    thinking: ref mut t,
+                                    ..
+                                }) = partial.content.get_mut(ci)
                                 {
                                     t.push_str(text);
                                 }
@@ -359,7 +388,6 @@ impl LLMProvider for GoogleProvider {
                                     .send(StreamEvent::ThinkingDelta {
                                         content_index: ci,
                                         delta: text.clone(),
-                                        partial: partial.clone(),
                                     })
                                     .await;
                             } else {
@@ -382,8 +410,9 @@ impl LLMProvider for GoogleProvider {
                                         i
                                     }
                                 };
-                                if let Some(Content::Text { text: ref mut t, .. }) =
-                                    partial.content.get_mut(ci)
+                                if let Some(Content::Text {
+                                    text: ref mut t, ..
+                                }) = partial.content.get_mut(ci)
                                 {
                                     t.push_str(text);
                                 }
@@ -391,7 +420,6 @@ impl LLMProvider for GoogleProvider {
                                     .send(StreamEvent::TextDelta {
                                         content_index: ci,
                                         delta: text.clone(),
-                                        partial: partial.clone(),
                                     })
                                     .await;
                             }
@@ -415,8 +443,10 @@ impl LLMProvider for GoogleProvider {
 
                             // Gemini gives us the full args object, not a delta string.
                             let args_str = fc.args.to_string();
-                            if let Some(Content::ToolCall { arguments: ref mut a, .. }) =
-                                partial.content.get_mut(ci)
+                            if let Some(Content::ToolCall {
+                                arguments: ref mut a,
+                                ..
+                            }) = partial.content.get_mut(ci)
                             {
                                 *a = fc.args.clone();
                             }
@@ -431,7 +461,6 @@ impl LLMProvider for GoogleProvider {
                                 .send(StreamEvent::ToolCallDelta {
                                     content_index: ci,
                                     delta: args_str.clone(),
-                                    partial: partial.clone(),
                                 })
                                 .await;
                         }
@@ -445,7 +474,13 @@ impl LLMProvider for GoogleProvider {
             let full_text = partial
                 .content
                 .get(ci)
-                .and_then(|c| if let Content::Text { text, .. } = c { Some(text.clone()) } else { None })
+                .and_then(|c| {
+                    if let Content::Text { text, .. } = c {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
             let _ = tx
                 .send(StreamEvent::TextEnd {
@@ -460,7 +495,13 @@ impl LLMProvider for GoogleProvider {
             let full_thinking = partial
                 .content
                 .get(ci)
-                .and_then(|c| if let Content::Thinking { thinking, .. } = c { Some(thinking.clone()) } else { None })
+                .and_then(|c| {
+                    if let Content::Thinking { thinking, .. } = c {
+                        Some(thinking.clone())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
             let _ = tx
                 .send(StreamEvent::ThinkingEnd {
@@ -473,7 +514,12 @@ impl LLMProvider for GoogleProvider {
 
         for (name, (ci, _)) in &tool_call_map {
             let tool_call = match partial.content.get(*ci) {
-                Some(Content::ToolCall { id, name, arguments, .. }) => ToolCall {
+                Some(Content::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                }) => ToolCall {
                     id: id.clone(),
                     name: name.clone(),
                     arguments: arguments.clone(),
@@ -494,9 +540,19 @@ impl LLMProvider for GoogleProvider {
 
         let reason = partial.stop_reason.clone();
         if reason == StopReason::Error {
-            let _ = tx.send(StreamEvent::Error { reason, error: partial }).await;
+            let _ = tx
+                .send(StreamEvent::Error {
+                    reason,
+                    error: partial,
+                })
+                .await;
         } else {
-            let _ = tx.send(StreamEvent::Done { reason, message: partial }).await;
+            let _ = tx
+                .send(StreamEvent::Done {
+                    reason,
+                    message: partial,
+                })
+                .await;
         }
 
         Ok(())

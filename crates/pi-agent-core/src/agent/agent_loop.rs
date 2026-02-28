@@ -1,21 +1,26 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{broadcast, mpsc};
 use tracing::warn;
 use uuid::Uuid;
 
 use pi_ai::{
-    AssistantMessage, Content, Context, Message,
-    SimpleStreamOptions, StreamEvent, ToolResultMessage,
+    AssistantMessage, Content, Context, Message, SimpleStreamOptions, StreamEvent, StreamOptions,
+    ToolResultMessage,
+};
+
+use crate::context::compaction::{
+    build_compaction_prompt, find_compaction_split, serialize_conversation, should_compact,
+    CompactionResult,
 };
 
 use crate::agent::events::{AgentEndReason, AgentEvent};
 use crate::agent::state::{AgentConfig, AgentSharedState, AgentState};
 use crate::context::budget::ContextUsage;
+use crate::error::{AgentError, Result};
 use crate::messages::{self, AgentMessage};
 use crate::tools::traits::{ToolContext, ToolResult as AgentToolResult};
-use crate::error::{AgentError, Result};
 
 /// The Agent drives the core loop of: prompt → stream → tool execution → repeat.
 pub struct Agent {
@@ -28,7 +33,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(config: AgentConfig) -> Self {
-        let (event_tx, _) = broadcast::channel(256);
+        let (event_tx, _) = broadcast::channel(4096);
         Self {
             config,
             shared: Arc::new(AgentSharedState::new()),
@@ -52,6 +57,11 @@ impl Agent {
         self.messages.read().await.clone()
     }
 
+    /// Preload conversation messages before issuing new prompts (e.g. session resume).
+    pub async fn preload_messages(&self, messages: Vec<AgentMessage>) {
+        self.messages.write().await.extend(messages);
+    }
+
     /// Abort the current operation
     pub fn abort(&self) {
         let _ = self.shared.abort_tx.send(true);
@@ -71,7 +81,9 @@ impl Agent {
     /// Returns the final assistant message or an error.
     pub async fn prompt(&self, user_text: &str) -> Result<AssistantMessage> {
         let agent_id = Uuid::new_v4().to_string();
-        self.emit(AgentEvent::AgentStart { agent_id: agent_id.clone() });
+        self.emit(AgentEvent::AgentStart {
+            agent_id: agent_id.clone(),
+        });
         self.reset_abort();
 
         // Add user message
@@ -88,116 +100,161 @@ impl Agent {
             Err(e) => AgentEndReason::Error(e.to_string()),
         };
 
+        let final_state = match &reason {
+            AgentEndReason::Aborted => AgentState::Aborted,
+            _ => AgentState::Idle,
+        };
         self.emit(AgentEvent::AgentEnd { agent_id, reason });
-        *self.shared.state.write().await = AgentState::Idle;
+        *self.shared.state.write().await = final_state;
         result
     }
 
     /// The core agent loop
-    async fn run_loop(&self, _agent_id: &str) -> Result<AssistantMessage> {
+    async fn run_loop(&self, agent_id: &str) -> Result<AssistantMessage> {
+        tracing::debug!(agent_id = %agent_id, "Agent loop starting");
         let mut turn_index = 0usize;
         let mut last_message: Option<AssistantMessage> = None;
 
-        loop {
-            // Check abort
-            if *self.shared.abort_rx.borrow() {
-                return Err(AgentError::Aborted);
-            }
-
-            // Check max turns
-            if self.config.max_turns > 0 && turn_index >= self.config.max_turns {
-                return last_message.ok_or(AgentError::MaxTurns(self.config.max_turns));
-            }
-
-            // Check for steering messages
-            let steering = self.shared.queue.drain_steering().await;
-            if !steering.is_empty() {
-                let mut msgs = self.messages.write().await;
-                for msg in steering {
-                    msgs.push(msg);
+        'outer: loop {
+            loop {
+                // Check abort
+                if *self.shared.abort_rx.borrow() {
+                    return Err(AgentError::Aborted);
                 }
-            }
 
-            self.emit(AgentEvent::TurnStart { turn_index });
-            *self.shared.state.write().await = AgentState::Streaming;
+                // Check max turns
+                if self.config.max_turns > 0 && turn_index >= self.config.max_turns {
+                    return last_message.ok_or(AgentError::MaxTurns(self.config.max_turns));
+                }
 
-            // Build context
-            let context = self.build_context().await;
-
-            // Stream LLM response
-            let message_id = Uuid::new_v4().to_string();
-            self.emit(AgentEvent::MessageStart {
-                message_id: message_id.clone(),
-                role: "assistant".to_string(),
-            });
-
-            let assistant_msg = self.stream_response(&context, &message_id).await?;
-
-            self.emit(AgentEvent::MessageEnd {
-                message_id: message_id.clone(),
-                usage: Some(assistant_msg.usage.clone()),
-            });
-
-            // Accumulate usage
-            self.shared.total_usage.write().await.add(&assistant_msg.usage);
-
-            // Collect tool calls before moving assistant_msg into a Message
-            let has_tool_calls = assistant_msg.has_tool_calls();
-            let tool_calls: Vec<(String, String, serde_json::Value)> = assistant_msg
-                .content
-                .iter()
-                .filter_map(|c| match c {
-                    Content::ToolCall { id, name, arguments, .. } => {
-                        Some((id.clone(), name.clone(), arguments.clone()))
+                // Check for steering messages
+                let steering = self.shared.queue.drain_steering().await;
+                if !steering.is_empty() {
+                    let mut msgs = self.messages.write().await;
+                    for msg in steering {
+                        msgs.push(msg);
                     }
-                    _ => None,
-                })
-                .collect();
+                }
 
-            // Store assistant message
-            self.messages.write().await.push(
-                AgentMessage::from_llm(Message::Assistant(assistant_msg.clone()))
-            );
+                self.emit(AgentEvent::TurnStart { turn_index });
+                *self.shared.state.write().await = AgentState::Streaming;
 
-            last_message = Some(assistant_msg.clone());
+                // Build context
+                let context = self.build_context().await;
 
-            // If no tool calls, we're done with this loop
-            if !has_tool_calls {
+                // Stream LLM response
+                let message_id = Uuid::new_v4().to_string();
+                self.emit(AgentEvent::MessageStart {
+                    message_id: message_id.clone(),
+                    role: "assistant".to_string(),
+                });
+
+                let assistant_msg = self.stream_response(&context, &message_id).await?;
+
+                self.emit(AgentEvent::MessageEnd {
+                    message_id: message_id.clone(),
+                    usage: Some(assistant_msg.usage.clone()),
+                });
+
+                // Accumulate usage
+                self.shared
+                    .total_usage
+                    .write()
+                    .await
+                    .add(&assistant_msg.usage);
+
+                // Collect tool calls before moving assistant_msg into a Message
+                let has_tool_calls = assistant_msg.has_tool_calls();
+                let tool_calls: Vec<(String, String, serde_json::Value)> = assistant_msg
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        Content::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } => Some((id.clone(), name.clone(), arguments.clone())),
+                        _ => None,
+                    })
+                    .collect();
+
+                // Store assistant message
+                self.messages
+                    .write()
+                    .await
+                    .push(AgentMessage::from_llm(Message::Assistant(
+                        assistant_msg.clone(),
+                    )));
+
+                last_message = Some(assistant_msg.clone());
+
+                // Auto-compaction check
+                if self.config.compaction.enabled {
+                    let usage = self.context_usage().await;
+                    let context_window = self.config.token_budget.context_window;
+                    if should_compact(
+                        usage.total_tokens,
+                        context_window,
+                        &self.config.compaction,
+                    ) {
+                        self.emit(AgentEvent::AutoCompaction);
+                        match self.run_compaction().await {
+                            Ok(result) => {
+                                tracing::info!(
+                                    tokens_before = result.tokens_before,
+                                    tokens_after = result.tokens_after,
+                                    "Auto-compacted context"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("Auto-compaction failed: {e}");
+                            }
+                        }
+                    }
+                }
+
+                // If no tool calls, we're done with this inner loop
+                if !has_tool_calls {
+                    self.emit(AgentEvent::TurnEnd {
+                        turn_index,
+                        message: Some(Message::Assistant(assistant_msg)),
+                    });
+                    break;
+                }
+
+                // Execute tool calls
+                *self.shared.state.write().await = AgentState::ExecutingTools;
+                let tool_results = self.execute_tools(&tool_calls).await;
+
+                // Add tool results as messages
+                {
+                    let mut msgs = self.messages.write().await;
+                    for result in &tool_results {
+                        msgs.push(AgentMessage::from_llm(result.clone()));
+                    }
+                }
+
                 self.emit(AgentEvent::TurnEnd {
                     turn_index,
                     message: Some(Message::Assistant(assistant_msg)),
                 });
-                break;
+
+                turn_index += 1;
+            } // end inner loop
+
+            // Process any follow-up messages; if present, re-enter the inner loop.
+            let follow_ups = self.shared.queue.drain_follow_up().await;
+            if follow_ups.is_empty() {
+                break 'outer;
             }
-
-            // Execute tool calls
-            *self.shared.state.write().await = AgentState::ExecutingTools;
-            let tool_results = self.execute_tools(&tool_calls).await;
-
-            // Add tool results as messages
             {
                 let mut msgs = self.messages.write().await;
-                for result in &tool_results {
-                    msgs.push(AgentMessage::from_llm(result.clone()));
+                for msg in follow_ups {
+                    msgs.push(msg);
                 }
             }
-
-            self.emit(AgentEvent::TurnEnd {
-                turn_index,
-                message: Some(Message::Assistant(assistant_msg)),
-            });
-
-            turn_index += 1;
-        }
-
-        // Process any follow-up messages
-        let follow_ups = self.shared.queue.drain_follow_up().await;
-        if !follow_ups.is_empty() {
-            let mut msgs = self.messages.write().await;
-            for msg in follow_ups {
-                msgs.push(msg);
-            }
-        }
+        } // end 'outer loop
 
         last_message.ok_or_else(|| AgentError::Other(anyhow::anyhow!("No response generated")))
     }
@@ -234,7 +291,9 @@ impl Agent {
         let model = self.config.model.clone();
         let context_clone = context.clone();
         let stream_handle = tokio::spawn(async move {
-            provider.stream_simple(&model, &context_clone, &options, tx).await
+            provider
+                .stream_simple(&model, &context_clone, &options, tx)
+                .await
         });
 
         // Collect events
@@ -287,64 +346,97 @@ impl Agent {
                 if e.is_cancelled() {
                     return Err(AgentError::Aborted);
                 }
-                return Err(AgentError::Other(anyhow::anyhow!("Stream task panicked: {}", e)));
+                return Err(AgentError::Other(anyhow::anyhow!(
+                    "Stream task panicked: {}",
+                    e
+                )));
             }
         }
 
         final_message.ok_or_else(|| AgentError::Other(anyhow::anyhow!("No response from LLM")))
     }
 
-    /// Execute tool calls and return tool result messages
+    /// Execute tool calls concurrently and return tool result messages in original order.
+    ///
+    /// Approval checks (which require user interaction) are still performed sequentially
+    /// before spawning, because they may need to wait on a single-consumer approval channel.
+    /// Once approved (or if no approval is required), tool execution runs concurrently via
+    /// `futures::future::join_all`.
     async fn execute_tools(
         &self,
         tool_calls: &[(String, String, serde_json::Value)],
     ) -> Vec<Message> {
-        let mut results = Vec::new();
+        use futures::future::join_all;
 
-        for (call_id, tool_name, arguments) in tool_calls {
-            self.emit(AgentEvent::ToolExecutionStart {
-                tool_name: tool_name.clone(),
-                call_id: call_id.clone(),
-                arguments: arguments.clone(),
-            });
+        // Emit ToolExecutionStart for every call and build a future per tool.
+        // Approval is checked inside execute_single_tool which must remain sequential
+        // relative to the approval channel; therefore we run approvals sequentially but
+        // the actual tool *execution* (after approval) can be overlapped.
+        //
+        // Strategy: collect one future per call that does (start_event → execute → end_event)
+        // and then join_all them. The approval wait inside execute_single_tool is async-safe
+        // but serialises on the shared Mutex<Receiver>; tools that don't need approval run
+        // freely in parallel.
+        let futures: Vec<_> = tool_calls
+            .iter()
+            .map(|(call_id, tool_name, arguments)| {
+                // Emit start before creating the future so callers see events immediately.
+                self.emit(AgentEvent::ToolExecutionStart {
+                    tool_name: tool_name.clone(),
+                    call_id: call_id.clone(),
+                    arguments: arguments.clone(),
+                });
 
-            let start = Instant::now();
-            let result = self.execute_single_tool(call_id, tool_name, arguments).await;
-            let duration_ms = start.elapsed().as_millis() as u64;
+                let call_id = call_id.clone();
+                let tool_name = tool_name.clone();
+                let arguments = arguments.clone();
 
-            let (content, is_error) = match result {
-                Ok(tool_result) => (tool_result.content, tool_result.is_error),
-                Err(e) => (format!("Error: {e}"), true),
-            };
+                async move {
+                    let start = Instant::now();
+                    let result = self
+                        .execute_single_tool(&call_id, &tool_name, &arguments)
+                        .await;
+                    let duration_ms = start.elapsed().as_millis() as u64;
 
-            self.emit(AgentEvent::ToolExecutionEnd {
-                call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                result: content.clone(),
-                duration_ms,
-                is_error,
-            });
+                    let (content, is_error) = match result {
+                        Ok(tool_result) => (tool_result.content, tool_result.is_error),
+                        Err(e) => (format!("Error: {e}"), true),
+                    };
 
-            // Create tool result message
-            let tool_result_msg = Message::ToolResult(ToolResultMessage {
-                tool_call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                content: vec![Content::text(&content)],
-                details: None,
-                is_error,
-                timestamp: chrono::Utc::now().timestamp_millis(),
-            });
+                    self.emit(AgentEvent::ToolExecutionEnd {
+                        call_id: call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        result: content.clone(),
+                        duration_ms,
+                        is_error,
+                    });
 
-            results.push(tool_result_msg);
-        }
+                    Message::ToolResult(ToolResultMessage {
+                        tool_call_id: call_id,
+                        tool_name,
+                        content: vec![Content::text(&content)],
+                        details: None,
+                        is_error,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    })
+                }
+            })
+            .collect();
 
-        results
+        // Run all tool executions concurrently; join_all preserves input order.
+        join_all(futures).await
     }
 
-    /// Execute a single tool
+    /// Execute a single tool, checking for approval if the tool requires it.
+    ///
+    /// When `tool.requires_approval()` is true:
+    /// 1. A `ToolApprovalRequired` event is emitted so the caller can prompt the user.
+    /// 2. The method waits (up to 5 minutes) on the approval channel for a matching `call_id`.
+    /// 3. If the user denies or the timeout expires, execution is skipped and an error result
+    ///    is returned so the agent can communicate the denial back to the LLM.
     async fn execute_single_tool(
         &self,
-        _call_id: &str,
+        call_id: &str,
         tool_name: &str,
         arguments: &serde_json::Value,
     ) -> Result<AgentToolResult> {
@@ -353,12 +445,238 @@ impl Agent {
             .get(tool_name)
             .ok_or_else(|| AgentError::ToolNotFound(tool_name.to_string()))?
             .clone();
-        drop(tools_guard); // Release lock before executing
+        drop(tools_guard); // Release lock before any await
 
-        let ctx = ToolContext::new(self.config.cwd.clone())
-            .with_abort(self.shared.abort_rx.clone());
+        // --- Approval gate ---
+        if tool.requires_approval() {
+            self.emit(AgentEvent::ToolApprovalRequired {
+                call_id: call_id.to_string(),
+                tool_name: tool_name.to_string(),
+                arguments: arguments.clone(),
+            });
+
+            // Wait up to 5 minutes for an approval decision that matches our call_id.
+            const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
+            let approved = self.wait_for_approval(call_id, APPROVAL_TIMEOUT).await;
+
+            self.emit(AgentEvent::ToolApprovalResult {
+                call_id: call_id.to_string(),
+                approved,
+            });
+
+            if !approved {
+                return Ok(AgentToolResult::error("Tool execution denied by user"));
+            }
+        }
+
+        let ctx =
+            ToolContext::new(self.config.cwd.clone()).with_abort(self.shared.abort_rx.clone());
 
         tool.execute(arguments.clone(), &ctx).await
+    }
+
+    /// Block until an approval decision for `call_id` arrives or the timeout elapses.
+    ///
+    /// Decisions for other call IDs received while waiting are re-queued by sending them
+    /// back through the channel so they are not lost.
+    async fn wait_for_approval(&self, call_id: &str, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        // Buffer for decisions that belong to other call IDs so we can put them back.
+        let mut pending_others: Vec<(String, bool)> = Vec::new();
+
+        let result = loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                // Timed out — treat as denied.
+                break false;
+            }
+
+            let mut rx = self.shared.approval_rx.lock().await;
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Some((id, approved))) => {
+                    if id == call_id {
+                        break approved;
+                    }
+                    // Decision is for a different call — save it to re-queue later.
+                    pending_others.push((id, approved));
+                }
+                Ok(None) => {
+                    // Channel closed — treat as denied.
+                    break false;
+                }
+                Err(_elapsed) => {
+                    // Timeout — treat as denied.
+                    break false;
+                }
+            }
+        };
+
+        // Re-queue decisions that arrived for other call IDs.
+        for (id, approved) in pending_others {
+            // Best-effort: if the channel is full we drop rather than block.
+            let _ = self.shared.approval_tx.try_send((id, approved));
+        }
+
+        result
+    }
+
+    /// Send an approval decision for a pending tool call.
+    ///
+    /// `call_id` must match the `call_id` from the `ToolApprovalRequired` event.
+    /// Returns `false` if the approval channel is closed or full.
+    pub async fn approve_tool(&self, call_id: &str, approved: bool) -> bool {
+        self.shared
+            .approval_tx
+            .send((call_id.to_string(), approved))
+            .await
+            .is_ok()
+    }
+
+    /// Run context compaction: summarize older messages via an LLM call and
+    /// replace them with a single `CompactionSummary` message.
+    async fn run_compaction(&self) -> Result<CompactionResult> {
+        let previous_state = *self.shared.state.read().await;
+        *self.shared.state.write().await = AgentState::Compacting;
+
+        let result = self.run_compaction_inner().await;
+
+        // Restore previous state (or Idle on success)
+        *self.shared.state.write().await = if result.is_ok() {
+            previous_state
+        } else {
+            previous_state
+        };
+
+        result
+    }
+
+    /// Inner implementation of compaction, separated so state management
+    /// can happen in the outer wrapper regardless of errors.
+    async fn run_compaction_inner(&self) -> Result<CompactionResult> {
+        let messages = self.messages.read().await;
+        let llm_messages = messages::to_llm_messages(&messages);
+
+        // Calculate per-message token counts for split-point determination
+        let message_tokens: Vec<u64> = messages
+            .iter()
+            .map(|m| messages::estimate_tokens(m))
+            .collect();
+        let split_idx = find_compaction_split(
+            &message_tokens,
+            self.config.compaction.keep_recent_tokens,
+        );
+
+        if split_idx == 0 {
+            return Err(AgentError::Compaction(
+                "Nothing to compact — all messages are within the keep-recent window".to_string(),
+            ));
+        }
+
+        // Build the serialized conversation text from messages to compact
+        let to_compact = &llm_messages[..split_idx];
+        let conversation_text = serialize_conversation(to_compact);
+
+        // Check for a previous compaction summary to do incremental update
+        let previous_summary = messages.iter().find_map(|m| {
+            if let AgentMessage::CompactionSummary { summary, .. } = m {
+                Some(summary.clone())
+            } else {
+                None
+            }
+        });
+
+        let tokens_before: u64 = message_tokens.iter().sum();
+        drop(messages); // release read lock before the LLM call
+
+        // Build compaction prompt
+        let (system_prompt, user_prompt) =
+            build_compaction_prompt(&conversation_text, previous_summary.as_deref());
+
+        // Call LLM for summarization using the non-streaming complete() method
+        let summary_context =
+            Context::new(vec![Message::user(&user_prompt)]).with_system(system_prompt);
+        let options = StreamOptions {
+            max_tokens: Some(8192),
+            ..Default::default()
+        };
+
+        self.emit(AgentEvent::AutoCompactionStart {
+            reason: format!(
+                "Context at {} tokens, compacting {} messages",
+                tokens_before, split_idx
+            ),
+        });
+
+        let summary_msg = self
+            .config
+            .provider
+            .complete(&self.config.model, &summary_context, &options)
+            .await
+            .map_err(|e| {
+                self.emit(AgentEvent::AutoCompactionEnd {
+                    success: false,
+                    tokens_before,
+                    tokens_after: None,
+                    error: Some(e.to_string()),
+                });
+                AgentError::Compaction(format!("LLM call failed: {e}"))
+            })?;
+
+        // Extract text from the summary response
+        let summary_text = summary_msg
+            .content
+            .iter()
+            .filter_map(|c| {
+                if let Content::Text { text, .. } = c {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if summary_text.is_empty() {
+            self.emit(AgentEvent::AutoCompactionEnd {
+                success: false,
+                tokens_before,
+                tokens_after: None,
+                error: Some("Empty summary from LLM".to_string()),
+            });
+            return Err(AgentError::Compaction(
+                "LLM returned empty summary".to_string(),
+            ));
+        }
+
+        // Replace compacted messages with the summary
+        let mut msgs = self.messages.write().await;
+        let kept = msgs.split_off(split_idx);
+        let summary_message = AgentMessage::CompactionSummary {
+            summary: summary_text.clone(),
+            tokens_before,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        };
+        msgs.clear();
+        msgs.push(summary_message);
+        msgs.extend(kept);
+
+        let tokens_after: u64 = msgs.iter().map(|m| messages::estimate_tokens(m)).sum();
+        drop(msgs);
+
+        self.emit(AgentEvent::AutoCompactionEnd {
+            success: true,
+            tokens_before,
+            tokens_after: Some(tokens_after),
+            error: None,
+        });
+
+        Ok(CompactionResult {
+            summary: summary_text,
+            messages_compacted: split_idx,
+            tokens_before,
+            tokens_after,
+            first_kept_id: None,
+        })
     }
 
     /// Emit an event to all subscribers

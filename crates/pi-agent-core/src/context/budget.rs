@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Token budget configuration for context management
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +25,8 @@ impl TokenBudget {
 
     /// Maximum tokens available for context (messages + system prompt)
     pub fn available_for_context(&self) -> u64 {
-        self.context_window.saturating_sub(self.reserve_for_response)
+        self.context_window
+            .saturating_sub(self.reserve_for_response)
     }
 
     /// Whether compaction should trigger given current token usage

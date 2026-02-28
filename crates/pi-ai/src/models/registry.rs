@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -64,12 +65,11 @@ impl Model {
 
 // ─── Built-in model catalogue ─────────────────────────────────────────────────
 
-/// Returns a list of well-known models with their pricing information.
+/// Lazily-initialised, process-lifetime catalogue of built-in models.
 ///
-/// Pricing is in USD per million tokens and is sourced from public provider
-/// pricing pages (as of 2025-Q2).  Always verify against the provider's
-/// current pricing for billing-critical applications.
-pub fn built_in_models() -> Vec<Model> {
+/// Allocated once on first access; all subsequent calls return a reference to
+/// the same slice.
+static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
     vec![
         // ── Anthropic ──────────────────────────────────────────────────────
         Model {
@@ -80,7 +80,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.anthropic.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
+            cost: ModelCost {
+                input: 15.0,
+                output: 75.0,
+                cache_read: 1.5,
+                cache_write: 18.75,
+            },
             context_window: 200_000,
             max_tokens: 32_000,
             headers: None,
@@ -93,7 +98,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.anthropic.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+            },
             context_window: 200_000,
             max_tokens: 16_000,
             headers: None,
@@ -106,7 +116,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.anthropic.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 0.8, output: 4.0, cache_read: 0.08, cache_write: 1.0 },
+            cost: ModelCost {
+                input: 0.8,
+                output: 4.0,
+                cache_read: 0.08,
+                cache_write: 1.0,
+            },
             context_window: 200_000,
             max_tokens: 8_096,
             headers: None,
@@ -119,7 +134,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.anthropic.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 15.0, output: 75.0, cache_read: 1.5, cache_write: 18.75 },
+            cost: ModelCost {
+                input: 15.0,
+                output: 75.0,
+                cache_read: 1.5,
+                cache_write: 18.75,
+            },
             context_window: 200_000,
             max_tokens: 32_000,
             headers: None,
@@ -132,7 +152,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.anthropic.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 },
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+            },
             context_window: 200_000,
             max_tokens: 16_000,
             headers: None,
@@ -146,7 +171,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.openai.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 2.5, output: 10.0, cache_read: 1.25, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 2.5,
+                output: 10.0,
+                cache_read: 1.25,
+                cache_write: 0.0,
+            },
             context_window: 128_000,
             max_tokens: 16_384,
             headers: None,
@@ -159,7 +189,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.openai.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 0.15, output: 0.6, cache_read: 0.075, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.15,
+                output: 0.6,
+                cache_read: 0.075,
+                cache_write: 0.0,
+            },
             context_window: 128_000,
             max_tokens: 16_384,
             headers: None,
@@ -172,7 +207,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.openai.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 2.0, output: 8.0, cache_read: 0.5, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 2.0,
+                output: 8.0,
+                cache_read: 0.5,
+                cache_write: 0.0,
+            },
             context_window: 1_047_576,
             max_tokens: 32_768,
             headers: None,
@@ -185,7 +225,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.openai.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 0.4, output: 1.6, cache_read: 0.1, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.4,
+                output: 1.6,
+                cache_read: 0.1,
+                cache_write: 0.0,
+            },
             context_window: 1_047_576,
             max_tokens: 32_768,
             headers: None,
@@ -198,7 +243,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.openai.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 10.0, output: 40.0, cache_read: 2.5, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 10.0,
+                output: 40.0,
+                cache_read: 2.5,
+                cache_write: 0.0,
+            },
             context_window: 200_000,
             max_tokens: 100_000,
             headers: None,
@@ -211,7 +261,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.openai.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 1.1, output: 4.4, cache_read: 0.275, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 1.1,
+                output: 4.4,
+                cache_read: 0.275,
+                cache_write: 0.0,
+            },
             context_window: 200_000,
             max_tokens: 100_000,
             headers: None,
@@ -225,7 +280,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://generativelanguage.googleapis.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 1.25, output: 10.0, cache_read: 0.31, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: 0.31,
+                cache_write: 0.0,
+            },
             context_window: 1_000_000,
             max_tokens: 65_536,
             headers: None,
@@ -238,7 +298,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://generativelanguage.googleapis.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 0.15, output: 0.6, cache_read: 0.0375, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.15,
+                output: 0.6,
+                cache_read: 0.0375,
+                cache_write: 0.0,
+            },
             context_window: 1_000_000,
             max_tokens: 65_536,
             headers: None,
@@ -251,7 +316,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://generativelanguage.googleapis.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 0.1, output: 0.4, cache_read: 0.025, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.1,
+                output: 0.4,
+                cache_read: 0.025,
+                cache_write: 0.0,
+            },
             context_window: 1_000_000,
             max_tokens: 8_192,
             headers: None,
@@ -265,7 +335,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.groq.com/openai".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 0.59, output: 0.79, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.59,
+                output: 0.79,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 128_000,
             max_tokens: 32_768,
             headers: None,
@@ -278,7 +353,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.groq.com/openai".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 1.0, output: 3.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 1.0,
+                output: 3.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 131_072,
             max_tokens: 16_384,
             headers: None,
@@ -292,7 +372,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.x.ai".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 3.0, output: 15.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 131_072,
             max_tokens: 16_384,
             headers: None,
@@ -305,7 +390,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.x.ai".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 0.3, output: 0.5, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.3,
+                output: 0.5,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 131_072,
             max_tokens: 16_384,
             headers: None,
@@ -319,7 +409,12 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.mistral.ai".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 2.0, output: 6.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 2.0,
+                output: 6.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 128_000,
             max_tokens: 8_192,
             headers: None,
@@ -333,12 +428,20 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://openrouter.ai/api".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 0.18, output: 0.6, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.18,
+                output: 0.6,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 524_288,
             max_tokens: 16_384,
             headers: Some({
                 let mut h = HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -351,25 +454,49 @@ pub fn built_in_models() -> Vec<Model> {
             base_url: "https://api.cerebras.ai".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 0.1, output: 0.1, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.1,
+                output: 0.1,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 128_000,
             max_tokens: 8_192,
             headers: None,
         },
     ]
+});
+
+/// Returns the built-in model catalogue as a static slice.
+///
+/// The catalogue is allocated exactly once (on first call) and shared for
+/// the lifetime of the process.  Pricing is in USD per million tokens and is
+/// sourced from public provider pricing pages (as of 2025-Q2).  Always
+/// verify against the provider's current pricing for billing-critical
+/// applications.
+pub fn built_in_models() -> &'static [Model] {
+    &BUILT_IN_MODELS
 }
 
 /// Look up a built-in model by its ID.
 pub fn find_model(id: &str) -> Option<Model> {
-    built_in_models().into_iter().find(|m| m.id == id)
+    built_in_models().iter().find(|m| m.id == id).cloned()
 }
 
 /// Returns all built-in models for a given provider.
 pub fn models_for_provider(provider: &Provider) -> Vec<Model> {
-    built_in_models().into_iter().filter(|m| &m.provider == provider).collect()
+    built_in_models()
+        .iter()
+        .filter(|m| &m.provider == provider)
+        .cloned()
+        .collect()
 }
 
 /// Returns all built-in models that use a given API type.
 pub fn models_for_api(api: &Api) -> Vec<Model> {
-    built_in_models().into_iter().filter(|m| &m.api == api).collect()
+    built_in_models()
+        .iter()
+        .filter(|m| &m.api == api)
+        .cloned()
+        .collect()
 }

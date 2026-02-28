@@ -1,13 +1,13 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 use pi_agent_core::messages::AgentMessage;
+use serde::{Deserialize, Serialize};
 
 /// Session file header (first line of JSONL)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionHeader {
     #[serde(rename = "type")]
     pub entry_type: String, // always "session"
-    pub version: u32,       // currently 3
+    pub version: u32, // currently 3
     pub id: String,
     pub timestamp: DateTime<Utc>,
     pub cwd: String,
@@ -75,4 +75,17 @@ pub enum SessionEntry {
         timestamp: DateTime<Utc>,
         label: String,
     },
+}
+
+impl SessionEntry {
+    /// Stable entry ID for tree/thread relationships.
+    pub fn id(&self) -> &str {
+        match self {
+            SessionEntry::Message { id, .. }
+            | SessionEntry::Compaction { id, .. }
+            | SessionEntry::ModelChange { id, .. }
+            | SessionEntry::ThinkingLevelChange { id, .. }
+            | SessionEntry::Label { id, .. } => id,
+        }
+    }
 }

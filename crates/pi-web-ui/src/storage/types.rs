@@ -1,6 +1,6 @@
-use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 use pi_ai::ThinkingLevel;
+use serde::{Deserialize, Serialize};
 
 /// Session metadata for listing/filtering
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use pi_ai::StreamEvent;
+use serde::{Deserialize, Serialize};
 
 /// A serializable stream event for transport over HTTP/WebSocket.
 /// StreamEvent itself isn't serializable (it carries full AssistantMessage),
@@ -14,14 +14,9 @@ pub enum ProxyEvent {
     /// Thinking/reasoning delta
     ThinkingDelta { delta: String },
     /// Tool call started
-    ToolCallStart {
-        content_index: usize,
-    },
+    ToolCallStart { content_index: usize },
     /// Tool call argument delta
-    ToolCallDelta {
-        content_index: usize,
-        delta: String,
-    },
+    ToolCallDelta { content_index: usize, delta: String },
     /// Tool call completed
     ToolCallEnd {
         content_index: usize,
@@ -30,14 +25,9 @@ pub enum ProxyEvent {
         arguments: serde_json::Value,
     },
     /// Stream completed
-    Done {
-        stop_reason: String,
-        text: String,
-    },
+    Done { stop_reason: String, text: String },
     /// Stream errored
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 impl ProxyEvent {
@@ -45,20 +35,36 @@ impl ProxyEvent {
     pub fn from_stream_event(event: &StreamEvent) -> Self {
         match event {
             StreamEvent::Start { .. } => ProxyEvent::Start,
-            StreamEvent::TextDelta { delta, .. } => ProxyEvent::TextDelta { delta: delta.clone() },
-            StreamEvent::ThinkingDelta { delta, .. } => ProxyEvent::ThinkingDelta { delta: delta.clone() },
-            StreamEvent::ToolCallStart { content_index, .. } => ProxyEvent::ToolCallStart { content_index: *content_index },
-            StreamEvent::ToolCallDelta { content_index, delta, .. } => ProxyEvent::ToolCallDelta {
+            StreamEvent::TextDelta { delta, .. } => ProxyEvent::TextDelta {
+                delta: delta.clone(),
+            },
+            StreamEvent::ThinkingDelta { delta, .. } => ProxyEvent::ThinkingDelta {
+                delta: delta.clone(),
+            },
+            StreamEvent::ToolCallStart { content_index, .. } => ProxyEvent::ToolCallStart {
+                content_index: *content_index,
+            },
+            StreamEvent::ToolCallDelta {
+                content_index,
+                delta,
+                ..
+            } => ProxyEvent::ToolCallDelta {
                 content_index: *content_index,
                 delta: delta.clone(),
             },
-            StreamEvent::ToolCallEnd { content_index, tool_call, .. } => ProxyEvent::ToolCallEnd {
+            StreamEvent::ToolCallEnd {
+                content_index,
+                tool_call,
+                ..
+            } => ProxyEvent::ToolCallEnd {
                 content_index: *content_index,
                 call_id: tool_call.id.clone(),
                 name: tool_call.name.clone(),
                 arguments: tool_call.arguments.clone(),
             },
-            StreamEvent::Done { reason, message, .. } => ProxyEvent::Done {
+            StreamEvent::Done {
+                reason, message, ..
+            } => ProxyEvent::Done {
                 stop_reason: reason.to_string(),
                 text: message.text(),
             },
@@ -83,7 +89,8 @@ impl ProxyEvent {
 
 /// Helper to convert a slice of ProxyEvents to newline-delimited JSON
 pub fn events_to_ndjson(events: &[ProxyEvent]) -> String {
-    events.iter()
+    events
+        .iter()
         .map(|e| e.to_json_line())
         .collect::<Vec<_>>()
         .join("\n")

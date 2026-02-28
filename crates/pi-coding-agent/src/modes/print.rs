@@ -2,7 +2,7 @@ use anyhow::Result;
 use pi_agent_core::{Agent, AgentEvent};
 
 /// Run in print mode: send a single prompt, print the response, exit.
-pub async fn run_print_mode(agent: Agent, prompt: &str) -> Result<()> {
+pub async fn run_print_mode(agent: &Agent, prompt: &str) -> Result<()> {
     let mut rx = agent.subscribe();
 
     // Spawn event printer

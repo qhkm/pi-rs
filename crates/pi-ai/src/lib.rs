@@ -46,12 +46,14 @@ pub use streaming::sse::{SseEvent, SseStream};
 pub use models::registry::{built_in_models, find_model, InputType, Model, ModelCost};
 
 // Providers
-pub use providers::traits::{Context, LLMProvider, ProviderCapabilities, SimpleStreamOptions, StreamOptions};
-pub use providers::{AnthropicProvider, GoogleProvider, OpenAICompat, OpenAIProvider};
 pub use providers::registry::{
     clear_providers, get_provider, get_providers, register_defaults, register_provider,
     unregister_provider,
 };
+pub use providers::traits::{
+    Context, LLMProvider, ProviderCapabilities, SimpleStreamOptions, StreamOptions,
+};
+pub use providers::{AnthropicProvider, GoogleProvider, OpenAICompat, OpenAIProvider};
 
 // Auth
 pub use auth::api_key::{get_api_key, is_valid_api_key, require_api_key};

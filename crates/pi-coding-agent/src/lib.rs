@@ -1,6 +1,9 @@
 pub mod cli;
 pub mod compaction;
+pub mod context;
+pub mod export;
 pub mod extensions;
+pub mod input;
 pub mod modes;
 pub mod session;
 pub mod tools;

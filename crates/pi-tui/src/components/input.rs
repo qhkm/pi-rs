@@ -1,7 +1,7 @@
-use unicode_width::UnicodeWidthStr;
 use crate::components::traits::{Component, Focusable, InputResult, CURSOR_MARKER};
-use crate::keyboard::kitty::parse_input;
 use crate::keyboard::keybindings::{EditorAction, KeybindingsManager};
+use crate::keyboard::kitty::parse_input;
+use unicode_width::UnicodeWidthStr;
 
 /// Single-line text input component.
 ///
@@ -149,7 +149,8 @@ impl Input {
 
     fn update_scroll(&mut self, visible_width: usize) {
         // Keep cursor visible within the scroll window
-        let cursor_display_pos = UnicodeWidthStr::width(&self.value[self.scroll_offset..self.cursor]);
+        let cursor_display_pos =
+            UnicodeWidthStr::width(&self.value[self.scroll_offset..self.cursor]);
 
         if cursor_display_pos >= visible_width {
             // Scroll right

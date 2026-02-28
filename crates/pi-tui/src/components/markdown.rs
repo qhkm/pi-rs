@@ -1,6 +1,6 @@
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, HeadingLevel};
-use unicode_width::UnicodeWidthStr;
 use crate::components::traits::{Component, InputResult};
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use unicode_width::UnicodeWidthStr;
 
 /// Theme functions for rendering Markdown elements.
 /// Each function takes the content string and returns an ANSI-styled string.
@@ -196,7 +196,9 @@ impl<'t> MarkdownRenderer<'t> {
     }
 
     fn flush_table(&mut self) {
-        if self.table_rows.is_empty() { return; }
+        if self.table_rows.is_empty() {
+            return;
+        }
 
         // Calculate column widths
         let num_cols = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(0);
@@ -227,7 +229,11 @@ impl<'t> MarkdownRenderer<'t> {
             s.push('├');
             for (i, &w) in widths.iter().enumerate() {
                 s.push_str(&"─".repeat(w + 2));
-                if i + 1 < widths.len() { s.push('┼'); } else { s.push('┤'); }
+                if i + 1 < widths.len() {
+                    s.push('┼');
+                } else {
+                    s.push('┤');
+                }
             }
             s
         };
@@ -321,7 +327,11 @@ impl<'t> MarkdownRenderer<'t> {
                 self.lines.push((self.theme.code_block_border)(&border));
             }
             Tag::List(start) => {
-                let kind = if start.is_some() { ListKind::Ordered } else { ListKind::Bullet };
+                let kind = if start.is_some() {
+                    ListKind::Ordered
+                } else {
+                    ListKind::Bullet
+                };
                 self.list_stack.push(kind);
                 self.list_item_index.push(start.unwrap_or(1) as usize);
             }
@@ -338,9 +348,15 @@ impl<'t> MarkdownRenderer<'t> {
                 };
                 self.current_line = format!("{}{} ", indent, bullet);
             }
-            Tag::Emphasis => { self.in_italic = true; }
-            Tag::Strong => { self.in_bold = true; }
-            Tag::Strikethrough => { self.in_strikethrough = true; }
+            Tag::Emphasis => {
+                self.in_italic = true;
+            }
+            Tag::Strong => {
+                self.in_bold = true;
+            }
+            Tag::Strikethrough => {
+                self.in_strikethrough = true;
+            }
             Tag::Link { dest_url, .. } => {
                 self.in_link = true;
                 self.link_url = dest_url.to_string();
@@ -360,16 +376,20 @@ impl<'t> MarkdownRenderer<'t> {
             Tag::TableCell => {
                 self.current_line.clear();
             }
-            Tag::Image { dest_url, title, .. } => {
-                let alt = if title.is_empty() { dest_url.to_string() } else { title.to_string() };
+            Tag::Image {
+                dest_url, title, ..
+            } => {
+                let alt = if title.is_empty() {
+                    dest_url.to_string()
+                } else {
+                    title.to_string()
+                };
                 let styled = (self.theme.link)(&format!("[img: {}]", alt));
                 self.current_line.push_str(&styled);
             }
             Tag::HtmlBlock => {}
             Tag::FootnoteDefinition(_) => {}
-            Tag::DefinitionList
-            | Tag::DefinitionListTitle
-            | Tag::DefinitionListDefinition => {}
+            Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => {}
             Tag::MetadataBlock(_) => {}
             _ => {}
         }
@@ -433,9 +453,15 @@ impl<'t> MarkdownRenderer<'t> {
                     *idx += 1;
                 }
             }
-            TagEnd::Emphasis => { self.in_italic = false; }
-            TagEnd::Strong => { self.in_bold = false; }
-            TagEnd::Strikethrough => { self.in_strikethrough = false; }
+            TagEnd::Emphasis => {
+                self.in_italic = false;
+            }
+            TagEnd::Strong => {
+                self.in_bold = false;
+            }
+            TagEnd::Strikethrough => {
+                self.in_strikethrough = false;
+            }
             TagEnd::Link => {
                 self.in_link = false;
                 self.link_url.clear();
@@ -478,7 +504,12 @@ impl<'t> MarkdownRenderer<'t> {
                 self.lines.push(format!("  {}", line));
             }
             // Remove trailing empty pushed from final \n in code block
-            if self.lines.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+            if self
+                .lines
+                .last()
+                .map(|l| l.trim().is_empty())
+                .unwrap_or(false)
+            {
                 self.lines.pop();
             }
             return;
@@ -516,7 +547,7 @@ fn strip_ansi(s: &str) -> String {
             match chars.peek() {
                 Some(&'[') => {
                     chars.next(); // consume '['
-                    // Skip CSI sequence: params end at a letter
+                                  // Skip CSI sequence: params end at a letter
                     loop {
                         match chars.next() {
                             Some(c) if c.is_ascii_alphabetic() => break,
@@ -530,7 +561,10 @@ fn strip_ansi(s: &str) -> String {
                     loop {
                         match chars.next() {
                             Some('\x07') | None => break,
-                            Some('\x1b') => { chars.next(); break; }
+                            Some('\x1b') => {
+                                chars.next();
+                                break;
+                            }
                             _ => {}
                         }
                     }
@@ -547,7 +581,9 @@ fn strip_ansi(s: &str) -> String {
 /// Word-wrap a string (which may contain ANSI codes) to fit within `max_width` columns.
 /// This is a best-effort implementation that splits on spaces.
 fn wrap_ansi(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 { return vec![String::new()]; }
+    if max_width == 0 {
+        return vec![String::new()];
+    }
 
     let mut lines = Vec::new();
     let mut current_visible_width = 0usize;
@@ -586,5 +622,9 @@ fn wrap_ansi(text: &str, max_width: usize) -> Vec<String> {
         lines.push(current);
     }
 
-    if lines.is_empty() { vec![String::new()] } else { lines }
+    if lines.is_empty() {
+        vec![String::new()]
+    } else {
+        lines
+    }
 }

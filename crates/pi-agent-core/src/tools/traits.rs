@@ -14,11 +14,19 @@ pub struct ToolResult {
 
 impl ToolResult {
     pub fn success(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false, metadata: None }
+        Self {
+            content: content.into(),
+            is_error: false,
+            metadata: None,
+        }
     }
 
     pub fn error(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true, metadata: None }
+        Self {
+            content: content.into(),
+            is_error: true,
+            metadata: None,
+        }
     }
 
     pub fn with_metadata(mut self, metadata: Value) -> Self {
@@ -82,11 +90,7 @@ pub trait AgentTool: Send + Sync {
     fn parameters_schema(&self) -> Value;
 
     /// Execute the tool with the given arguments
-    async fn execute(
-        &self,
-        args: Value,
-        ctx: &ToolContext,
-    ) -> crate::Result<ToolResult>;
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> crate::Result<ToolResult>;
 
     /// Execute with streaming progress updates.
     /// Default implementation delegates to execute().

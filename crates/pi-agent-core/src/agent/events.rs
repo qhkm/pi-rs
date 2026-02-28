@@ -13,22 +13,35 @@ pub enum AgentEndReason {
 }
 
 /// Events emitted by the agent runtime
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// Agent execution started
     AgentStart { agent_id: String },
     /// Agent execution ended
-    AgentEnd { agent_id: String, reason: AgentEndReason },
+    AgentEnd {
+        agent_id: String,
+        reason: AgentEndReason,
+    },
     /// A new turn in the agent loop started
     TurnStart { turn_index: usize },
     /// A turn in the agent loop ended
-    TurnEnd { turn_index: usize, message: Option<Message> },
+    TurnEnd {
+        turn_index: usize,
+        message: Option<Message>,
+    },
     /// A message (user/assistant/tool_result) started being processed
     MessageStart { message_id: String, role: String },
     /// Streaming update to the current assistant message
-    MessageUpdate { message_id: String, event: StreamEvent },
+    MessageUpdate {
+        message_id: String,
+        event: StreamEvent,
+    },
     /// A message finished
-    MessageEnd { message_id: String, usage: Option<Usage> },
+    MessageEnd {
+        message_id: String,
+        usage: Option<Usage>,
+    },
     /// Tool execution started
     ToolExecutionStart {
         tool_name: String,
@@ -36,10 +49,7 @@ pub enum AgentEvent {
         arguments: serde_json::Value,
     },
     /// Tool execution progress update (streaming)
-    ToolExecutionUpdate {
-        call_id: String,
-        progress: String,
-    },
+    ToolExecutionUpdate { call_id: String, progress: String },
     /// Tool execution completed
     ToolExecutionEnd {
         call_id: String,
@@ -48,7 +58,9 @@ pub enum AgentEvent {
         duration_ms: u64,
         is_error: bool,
     },
-    /// Auto-compaction started
+    /// Auto-compaction triggered (emitted before the compaction LLM call)
+    AutoCompaction,
+    /// Auto-compaction started (with reason detail)
     AutoCompactionStart { reason: String },
     /// Auto-compaction ended
     AutoCompactionEnd {
@@ -57,4 +69,12 @@ pub enum AgentEvent {
         tokens_after: Option<u64>,
         error: Option<String>,
     },
+    /// Tool requires explicit user approval before execution
+    ToolApprovalRequired {
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+    /// Result of a user approval decision for a tool
+    ToolApprovalResult { call_id: String, approved: bool },
 }

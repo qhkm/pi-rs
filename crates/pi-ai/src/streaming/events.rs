@@ -8,7 +8,8 @@ use crate::tools::schema::ToolCall;
 /// Each variant carries a `partial` snapshot of the `AssistantMessage` as it
 /// has been built so far, so consumers can render intermediate state without
 /// keeping their own accumulation buffers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// The stream has started; `partial` is the empty initial message.
     Start {
@@ -16,7 +17,6 @@ pub enum StreamEvent {
     },
 
     // ── Text events ──────────────────────────────────────────────────────────
-
     /// A new text content block is starting at `content_index`.
     TextStart {
         content_index: usize,
@@ -26,7 +26,6 @@ pub enum StreamEvent {
     TextDelta {
         content_index: usize,
         delta: String,
-        partial: AssistantMessage,
     },
     /// The text block at `content_index` is complete; `content` is the full
     /// accumulated text.
@@ -37,7 +36,6 @@ pub enum StreamEvent {
     },
 
     // ── Thinking / reasoning events ──────────────────────────────────────────
-
     ThinkingStart {
         content_index: usize,
         partial: AssistantMessage,
@@ -45,7 +43,6 @@ pub enum StreamEvent {
     ThinkingDelta {
         content_index: usize,
         delta: String,
-        partial: AssistantMessage,
     },
     ThinkingEnd {
         content_index: usize,
@@ -54,7 +51,6 @@ pub enum StreamEvent {
     },
 
     // ── Tool call events ─────────────────────────────────────────────────────
-
     ToolCallStart {
         content_index: usize,
         partial: AssistantMessage,
@@ -63,7 +59,6 @@ pub enum StreamEvent {
     ToolCallDelta {
         content_index: usize,
         delta: String,
-        partial: AssistantMessage,
     },
     /// The tool call at `content_index` is complete.
     ToolCallEnd {
@@ -73,7 +68,6 @@ pub enum StreamEvent {
     },
 
     // ── Terminal events ──────────────────────────────────────────────────────
-
     /// The model finished successfully.
     Done {
         reason: StopReason,
@@ -93,21 +87,25 @@ impl StreamEvent {
     }
 
     /// Returns a reference to the partial (or final) `AssistantMessage`
-    /// carried by every event variant.
-    pub fn partial_message(&self) -> &AssistantMessage {
+    /// carried by this event variant, if available.
+    ///
+    /// Delta events (`TextDelta`, `ThinkingDelta`, `ToolCallDelta`) do not
+    /// carry a snapshot and return `None` to avoid expensive clones.
+    pub fn partial_message(&self) -> Option<&AssistantMessage> {
         match self {
             StreamEvent::Start { partial }
             | StreamEvent::TextStart { partial, .. }
-            | StreamEvent::TextDelta { partial, .. }
             | StreamEvent::TextEnd { partial, .. }
             | StreamEvent::ThinkingStart { partial, .. }
-            | StreamEvent::ThinkingDelta { partial, .. }
             | StreamEvent::ThinkingEnd { partial, .. }
             | StreamEvent::ToolCallStart { partial, .. }
-            | StreamEvent::ToolCallDelta { partial, .. }
-            | StreamEvent::ToolCallEnd { partial, .. } => partial,
-            StreamEvent::Done { message, .. } => message,
-            StreamEvent::Error { error, .. } => error,
+            | StreamEvent::ToolCallEnd { partial, .. } => Some(partial),
+            StreamEvent::Done { message, .. } => Some(message),
+            StreamEvent::Error { error, .. } => Some(error),
+            // Delta events carry only the text increment, no full snapshot.
+            StreamEvent::TextDelta { .. }
+            | StreamEvent::ThinkingDelta { .. }
+            | StreamEvent::ToolCallDelta { .. } => None,
         }
     }
 

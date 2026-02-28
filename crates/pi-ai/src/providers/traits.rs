@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use crate::error::Result;
-use crate::messages::types::{AssistantMessage, Message, StopReason, ThinkingBudgets, ThinkingLevel};
+use crate::messages::types::{
+    AssistantMessage, Message, StopReason, ThinkingBudgets, ThinkingLevel,
+};
 use crate::models::registry::Model;
 use crate::streaming::events::StreamEvent;
 use crate::tools::schema::ToolDefinition;
@@ -50,7 +52,11 @@ pub struct Context {
 
 impl Context {
     pub fn new(messages: Vec<Message>) -> Self {
-        Context { system_prompt: None, messages, tools: vec![] }
+        Context {
+            system_prompt: None,
+            messages,
+            tools: vec![],
+        }
     }
 
     pub fn with_system(mut self, system_prompt: impl Into<String>) -> Self {
@@ -117,6 +123,12 @@ pub trait LLMProvider: Send + Sync {
 
     /// Non-streaming completion — collects the stream into a final message.
     ///
+    /// Runs the producer (`stream`) and the consumer (draining `rx`) as two
+    /// concurrent futures via `tokio::join!` so neither side blocks the other.
+    /// A bounded channel with a generous capacity is used so small responses
+    /// don't need to yield at all; large responses are still fine because
+    /// the consumer runs concurrently.
+    ///
     /// Override this if the provider has a cheaper non-streaming endpoint.
     async fn complete(
         &self,
@@ -124,40 +136,31 @@ pub trait LLMProvider: Send + Sync {
         context: &Context,
         options: &StreamOptions,
     ) -> Result<AssistantMessage> {
-        use futures::StreamExt;
-        use crate::streaming::event_stream::create_event_stream;
+        use tokio::sync::mpsc;
 
-        let (sender, receiver) = create_event_stream();
-        let tx = sender.mpsc_sender();
+        // Generous capacity so typical responses never apply backpressure.
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(1024);
 
-        // Drive the stream in a separate task.
-        let model_clone = model.clone();
-        let context_clone = context.clone();
-        let options_clone = options.clone();
-        let provider_ref = &*self;
-
-        let result = provider_ref.stream(&model_clone, &context_clone, &options_clone, tx).await;
-
-        // Drop the extra sender so the channel closes.
-        drop(sender);
-
-        if let Err(e) = result {
-            return Err(e);
-        }
-
-        // Collect events and find the final message.
-        let mut final_message: Option<AssistantMessage> = None;
-
-        let mut stream = receiver;
-        while let Some(event) = stream.next().await {
-            match event {
-                StreamEvent::Done { message, .. } | StreamEvent::Error { error: message, .. } => {
-                    final_message = Some(message);
+        // Concurrently drive the stream producer and drain the consumer.
+        // tokio::join! polls both futures on the same task, so when stream()
+        // blocks waiting for channel space, the drain future runs and frees
+        // capacity, preventing deadlock.
+        let (stream_result, final_message) =
+            tokio::join!(self.stream(model, context, options, tx), async {
+                let mut msg: Option<AssistantMessage> = None;
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        StreamEvent::Done { message, .. }
+                        | StreamEvent::Error { error: message, .. } => {
+                            msg = Some(message);
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
-            }
-        }
+                msg
+            });
 
+        stream_result?;
         final_message.ok_or(crate::error::PiAiError::StreamClosed)
     }
 }

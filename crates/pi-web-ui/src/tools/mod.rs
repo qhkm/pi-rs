@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Artifact types for the web UI
 #[derive(Debug, Clone, Serialize, Deserialize)]

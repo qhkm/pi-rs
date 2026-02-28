@@ -29,9 +29,11 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let app_token = args.app_token
+    let app_token = args
+        .app_token
         .ok_or_else(|| anyhow::anyhow!("SLACK_APP_TOKEN required"))?;
-    let bot_token = args.bot_token
+    let bot_token = args
+        .bot_token
         .ok_or_else(|| anyhow::anyhow!("SLACK_BOT_TOKEN required"))?;
 
     tracing::info!("Starting pi-mom with workspace: {}", args.workspace);

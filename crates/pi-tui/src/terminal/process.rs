@@ -1,8 +1,9 @@
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
-    execute, queue, terminal,
+    execute, queue,
     style::Print,
+    terminal,
 };
 use std::io::{self, Stdout, Write};
 use std::sync::{Arc, Mutex};

@@ -50,7 +50,11 @@ impl ToolCall {
         name: impl Into<String>,
         arguments: serde_json::Value,
     ) -> Self {
-        ToolCall { id: id.into(), name: name.into(), arguments }
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }
     }
 
     /// Parse the arguments JSON if stored as a string (some providers stream
@@ -67,13 +71,16 @@ impl ToolCall {
 impl From<&crate::messages::types::Content> for Option<ToolCall> {
     fn from(content: &crate::messages::types::Content) -> Self {
         match content {
-            crate::messages::types::Content::ToolCall { id, name, arguments, .. } => {
-                Some(ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                })
-            }
+            crate::messages::types::Content::ToolCall {
+                id,
+                name,
+                arguments,
+                ..
+            } => Some(ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            }),
             _ => None,
         }
     }

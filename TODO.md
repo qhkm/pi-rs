@@ -20,12 +20,16 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 - [x] **OpenAI provider** — Chat Completions with compatibility layer for Groq, Mistral, xAI, Cerebras, OpenRouter
 - [x] **Google provider** — Gemini GenerativeAI with tool calling and thinking blocks
 - [x] Provider registry (`register_provider` / `get_provider` / `register_defaults`)
-- [x] Model registry — 32 models with pricing, context windows, capabilities
+- [x] Model registry — 20+ models with pricing, context windows, capabilities
 - [x] Cost calculation (`calculate_cost`, `annotate_usage`)
 - [x] Auth — API key resolution from env vars for 11+ providers, placeholder detection
 - [x] `ToolDefinition`, `ToolCall`, `ToolResult` types with JSON Schema support
 - [x] Cross-provider message transforms: strip thinking, normalize tool IDs, merge consecutive messages
-- [x] 12 unit tests passing
+- [x] API key redaction in error messages (`redact_key()` — first 4 + `***` + last 4)
+- [x] Google API key moved to `x-goog-api-key` header (not URL query param)
+- [x] Provider registry recovers from poisoned locks (no panics)
+- [x] SSE parser: fixed event drop bug (VecDeque buffer), fixed separator precedence
+- [x] 22 unit tests passing
 
 ### pi-tui — Terminal UI Library ✅
 - [x] `Terminal` trait abstraction with `ProcessTerminal` (real) and `VirtualTerminal` (test)
@@ -49,7 +53,7 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 - [x] `Agent` struct with event-driven loop
 - [x] `AgentConfig`: provider, model, system prompt, max turns, token budget, compaction, thinking level
 - [x] `AgentState`: Idle, Streaming, ExecutingTools, Compacting, Aborted
-- [x] `AgentEvent` enum: agent/turn/message start/end, tool execution start/update/end, auto-compaction
+- [x] `AgentEvent` enum: agent/turn/message start/end, tool execution start/update/end, auto-compaction, **tool approval**
 - [x] `AgentEndReason`: Completed, MaxTurns, Aborted, Error, ContextOverflow
 - [x] `AgentTool` trait with `execute()`, `execute_streaming()`, `requires_approval()`, `to_tool_definition()`
 - [x] `ToolResult`, `ToolProgress`, `ToolContext` (with abort signal via `watch::Receiver<bool>`)
@@ -63,6 +67,7 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 - [x] `ContextUsage` statistics
 - [x] `ProxyEvent` — serializable wire format for browser→server streaming
 - [x] `AgentError` enum with `thiserror` and `From` conversions
+- [x] **Approval gate** — `ToolApprovalRequired`/`ToolApprovalResult` events, mpsc channel, 5-minute timeout
 - [x] 2 unit tests passing
 
 ### pi-coding-agent — CLI Coding Agent ✅
@@ -76,6 +81,7 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
   - [x] `find` — glob-based file search
   - [x] `ls` — directory listing with file sizes
 - [x] `FileOperations` trait for SSH/remote delegation, `LocalFileOps` default
+- [x] **Path traversal protection** — `resolve_and_validate_path()` with canonicalization + blocked system prefixes
 - [x] Session persistence — JSONL format (version 3 header, tree structure with id/parentId)
 - [x] `SessionManager` — create, append entries, list sessions
 - [x] `SessionEntry` enum: Message, Compaction, ModelChange, ThinkingLevelChange, Label
@@ -83,6 +89,7 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 - [x] JSON mode — emit JSONL events via ProxyEvent
 - [x] Extension types — `ExtensionManifest`, `ExtensionToolDef`, `ExecutorType` (Shell/Binary/Wasm)
 - [x] `main.rs` — full wiring: provider resolution, model lookup, tool registration, mode routing
+- [x] 8 unit tests passing (path traversal)
 
 ### pi-mom — Slack Bot (structural) ✅
 - [x] `SlackEvent`, `SlackEventType`, `SlackFile`, `SlackContext` types
@@ -112,7 +119,71 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 
 ---
 
-## What's Left To Do
+## Code Review Fixes — All Completed ✅
+
+All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code review have been fixed:
+
+| ID | Issue | Fix | Tests |
+|----|-------|-----|-------|
+| C1 | Google API key leaked in URL query string | Moved to `x-goog-api-key` header | — |
+| C2 | No path traversal protection on file tools | `resolve_and_validate_path()` with canonicalization, cwd boundary, blocked system prefixes | 8 |
+| C3 | Bash tool approval gate missing | `ToolApprovalRequired`/`ToolApprovalResult` events, mpsc approval channel, 5-min timeout | — |
+| C4 | SSE parser drops events + wrong separator precedence | `VecDeque` buffer for pending events, `min()` for first separator | 4 |
+| C5 | API key leaked in error messages | `redact_key()` shows first 4 + `***` + last 4 | 6 + 1 doctest |
+| C6 | Provider registry panics on poisoned lock | `.unwrap_or_else(\|e\| e.into_inner())` on all RwLock ops | — |
+
+---
+
+## Code Review Fixes — Important (All Fixed ✅)
+
+| ID | Issue | Fix |
+|----|-------|-----|
+| I1 | Bash tool ignores abort signal | Rewrote with `tokio::select!` racing `child.wait()` vs `abort_rx.changed()`; kills child on abort/timeout |
+| I2 | Excessive `partial.clone()` in stream handlers | Removed `partial` from `TextDelta`/`ThinkingDelta`/`ToolCallDelta` events; emit only deltas |
+| I3 | Tool execution is sequential | Rewrote with `futures::future::join_all` for concurrent tool execution |
+| I4 | OpenAI provider ignores system prompt | System prompt prepended as `"developer"` or `"system"` role message |
+| I5 | `complete()` method deadlocks | Uses `tokio::join!` with 1024-capacity channel to drive producer+consumer concurrently |
+| I6 | No timeout on LLM requests | All 3 providers use `reqwest::Client::builder().timeout(Duration::from_secs(300))` |
+| I7 | OpenAI `stream_simple` ignores reasoning | Overridden to send `reasoning_effort` for o3/o4-mini models |
+| I8 | Grep tool `--include` after `--` separator | Moved `--include` before `--` so grep treats it as an option |
+| I9 | Agent state not set to Aborted on abort | State set to `AgentState::Aborted` when abort occurs |
+| I10 | `broadcast::channel(256)` may drop events | Buffer increased to 4096 |
+| I11 | `register_defaults()` silently skips providers | Returns `Vec<String>` of warnings for missing API keys |
+| I12 | Follow-up messages never processed | Follow-ups re-enter the loop via `'outer: loop` wrapper |
+| I13 | `built_in_models()` allocates every call | Cached in `static BUILT_IN_MODELS: LazyLock<Vec<Model>>` |
+
+---
+
+## Code Review Fixes — Minor (All Fixed ✅)
+
+| ID | Issue | Fix |
+|----|-------|-----|
+| M1 | Dead `_agent_id` parameter | Now used in `tracing::debug!` |
+| M2 | Missing `Default` impl for tool structs | Added `impl Default` for `BashTool`, `GrepTool`, `FindTool`, `LsTool` |
+| M3 | `#[allow(dead_code)]` on serde structs | Removed unnecessary allows from Anthropic provider |
+| M4 | Duplicate `is_error` check in bash tool | Merged into single `if/else` |
+| M5 | Unused `Serialize` import | Removed from OpenAI provider |
+| M6 | Interactive mode is a no-op | Full REPL with streaming output, tool display, and approval prompts |
+| M7 | `once_cell` → `std::sync::LazyLock` | Replaced and removed `once_cell` dependency |
+| M8 | `resolve_path` duplication | Unified in `operations.rs` (done during C2 fix) |
+
+---
+
+## Recently Ported from pi-mono ✅
+
+| Feature | Crate | Key Files | Tests |
+|---------|-------|-----------|-------|
+| Context compaction (LLM call) | pi-agent-core | `context/compaction.rs` — prompts, `serialize_conversation()`, `should_compact()` | 4 |
+| Auto-compaction in agent loop | pi-agent-core | `agent/agent_loop.rs` — `run_compaction()`, checks after each assistant message | — |
+| Context injection (.pi/) | pi-coding-agent | `context/resource_loader.rs` — loads AGENTS.md, CLAUDE.md, SYSTEM.md, APPEND_SYSTEM.md | 12 |
+| RPC mode (JSON-RPC) | pi-coding-agent | `modes/rpc.rs`, `modes/rpc_types.rs` — prompt, abort, get_state, get_messages | — |
+| @filename expansion | pi-coding-agent | `input/file_processor.rs` — `<file>` tags, image extraction, base64 | 10 |
+| Session branching (branch/fork) | pi-coding-agent | `session/manager.rs` — `branch()`, `fork()` methods | 4 |
+| HTML export | pi-coding-agent | `export/html.rs` — standalone dark-themed HTML with tool calls, thinking | 9 |
+
+---
+
+## What's Left To Do (Features)
 
 ### pi-ai
 
@@ -124,7 +195,7 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 - [ ] **OpenAI Responses API** — new streaming format (different from Chat Completions)
 - [ ] **Retry/backoff decorator** — exponential backoff with jitter for rate limits
 - [ ] **Fallback provider decorator** — circuit breaker pattern, primary→secondary failover
-- [ ] **Vision/image input** — multimodal message construction for providers that support it
+- [ ] **Vision provider wiring** — wire image Content through Anthropic/OpenAI/Google request builders (types + @file extraction done)
 - [ ] **OAuth flows** — CLI login for Claude Pro/Max, ChatGPT Plus, Google
 - [ ] **Prompt caching** — explicit cache control headers (Anthropic)
 - [ ] **Model auto-discovery** — runtime model listing from provider APIs
@@ -147,11 +218,8 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 
 ### pi-agent-core
 
-- [ ] **Context compaction execution** — wire `build_compaction_prompt()` to an LLM call and produce `CompactionResult`
-- [ ] **Auto-compaction in agent loop** — check `should_compact()` each turn, compact when needed
 - [ ] **Tool definition token estimation** — count tokens used by tool schemas in context
 - [ ] **Streaming tool execution** — use `execute_streaming()` with progress events in agent loop
-- [ ] **Approval gate** — hook for user confirmation before executing tools with `requires_approval()`
 - [ ] **Session ID threading** — pass session IDs through to providers for cache reuse
 - [ ] **Dynamic thinking budgets** — adjust thinking level per-turn based on task complexity
 - [ ] **Agent abort cleanup** — ensure graceful cleanup of in-flight tool executions on abort
@@ -166,10 +234,6 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
   - [ ] Status bar (model, tokens, cost, session)
   - [ ] Command palette (slash commands)
   - [ ] Session tree navigation (`/tree`, `/fork`)
-- [ ] **RPC mode** — JSON-RPC 2.0 over stdin/stdout for IDE integration
-- [ ] **Session resume** — load existing JSONL session and continue conversation
-- [ ] **Session branching** — fork from any entry ID, navigate tree
-- [ ] **Session compaction** — auto/manual context summarization with LLM
 - [ ] **Extension loader** — scan directories, load manifests, instantiate shell/binary/WASM tools
 - [ ] **WASM plugin executor** — sandboxed execution via `wasmtime`
 - [ ] **Binary plugin executor** — JSON-RPC 2.0 over stdin/stdout with external processes
@@ -178,11 +242,7 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 - [ ] **Prompt templates** — load reusable snippets from `~/.pi/agent/prompts/`
 - [ ] **Skills system** — discover SKILL.md files, convert to tools
 - [ ] **Themes** — configurable color schemes for TUI and markdown
-- [ ] **Context injection** — AGENTS.md, SYSTEM.md, .pi/ project config
-- [ ] **File reference expansion** — `@filename` in input expands to file contents
-- [ ] **Bash expansion** — `!command` in input runs shell and inserts output
 - [ ] **Model cycling** — `--models` flag for switching between models
-- [ ] **Export** — export session to markdown/JSON
 - [ ] **Share** — generate shareable session URL
 
 ### pi-mom
@@ -263,11 +323,11 @@ Rust rewrite of [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (TypeScr
 
 | Crate | Files | Lines | Tests |
 |-------|-------|-------|-------|
-| pi-ai | 22 | 4,236 | 12 |
-| pi-tui | 20 | 4,156 | 11 |
-| pi-agent-core | 15 | 1,232 | 2 |
-| pi-coding-agent | 24 | 1,087 | 0 |
-| pi-mom | 10 | 252 | 0 |
-| pi-web-ui | 5 | 91 | 0 |
-| pi-pods | 10 | 271 | 0 |
-| **Total** | **106** | **11,325** | **26** |
+| pi-ai | 22 | 4,893 | 22 |
+| pi-tui | 20 | 4,212 | 11 |
+| pi-agent-core | 15 | 1,451 | 2 |
+| pi-coding-agent | 24 | 2,491 | 19 |
+| pi-mom | 10 | 307 | 0 |
+| pi-web-ui | 5 | 94 | 0 |
+| pi-pods | 10 | 336 | 0 |
+| **Total** | **106** | **~13,800** | **56** |

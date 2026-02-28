@@ -5,6 +5,7 @@
 /// <https://html.spec.whatwg.org/multipage/server-sent-events.html>
 use bytes::Bytes;
 use futures::Stream;
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -63,7 +64,10 @@ fn parse_field(line: &str, event: &mut SseEvent) {
 /// Parse a complete SSE block (lines separated by `\n` or `\r\n`) into an
 /// `SseEvent`.  Returns `None` if the block is empty / whitespace-only.
 pub fn parse_block(block: &str) -> Option<SseEvent> {
-    let mut event = SseEvent { event: "message".to_string(), ..Default::default() };
+    let mut event = SseEvent {
+        event: "message".to_string(),
+        ..Default::default()
+    };
     let mut has_field = false;
 
     for line in block.lines() {
@@ -74,7 +78,11 @@ pub fn parse_block(block: &str) -> Option<SseEvent> {
         }
     }
 
-    if has_field { Some(event) } else { None }
+    if has_field {
+        Some(event)
+    } else {
+        None
+    }
 }
 
 // ─── Streaming parser ─────────────────────────────────────────────────────────
@@ -83,6 +91,8 @@ pub fn parse_block(block: &str) -> Option<SseEvent> {
 pub struct SseStream {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: String,
+    /// Events that have been parsed from the buffer but not yet yielded.
+    pending_events: VecDeque<SseEvent>,
     done: bool,
 }
 
@@ -91,37 +101,47 @@ impl SseStream {
         SseStream {
             inner: Box::pin(stream),
             buffer: String::new(),
+            pending_events: VecDeque::new(),
             done: false,
         }
     }
 
-    /// Try to extract complete SSE blocks from the internal buffer.
-    /// A block is terminated by a blank line (`\n\n` or `\r\n\r\n`).
-    fn drain_events(&mut self) -> Vec<SseEvent> {
-        let mut events = Vec::new();
-
-        // Split on double newline (either \n\n or \r\n\r\n).
+    /// Extract all complete SSE blocks from the internal buffer and push each
+    /// parsed event onto `self.pending_events`.  A block is terminated by a
+    /// blank line (`\n\n` or `\r\n\r\n`).
+    fn drain_events(&mut self) {
         while let Some(pos) = find_double_newline(&self.buffer) {
             let block: String = self.buffer.drain(..pos).collect();
             // Consume the separator.
-            let sep_len = if self.buffer.starts_with("\r\n\r\n") { 4 } else { 2 };
+            let sep_len = if self.buffer.starts_with("\r\n\r\n") {
+                4
+            } else {
+                2
+            };
             self.buffer.drain(..sep_len);
 
             if let Some(event) = parse_block(&block) {
-                events.push(event);
+                self.pending_events.push_back(event);
             }
         }
-
-        events
     }
 }
 
+/// Return the position of the earliest double-newline separator in `s`.
+///
+/// Both `\n\n` and `\r\n\r\n` are recognised as SSE block terminators.
+/// Whichever starts at a lower byte offset is returned so that events are
+/// never reordered when a stream mixes the two styles.
 fn find_double_newline(s: &str) -> Option<usize> {
-    // Check for \r\n\r\n first, then \n\n.
-    if let Some(pos) = find_substr(s, "\r\n\r\n") {
-        return Some(pos);
+    let crlf = find_substr(s, "\r\n\r\n");
+    let lf = find_substr(s, "\n\n");
+
+    match (crlf, lf) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
     }
-    find_substr(s, "\n\n")
 }
 
 fn find_substr(haystack: &str, needle: &str) -> Option<usize> {
@@ -133,10 +153,9 @@ impl Stream for SseStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            // First: try to return buffered events.
-            let buffered = self.drain_events();
-            if let Some(first) = buffered.into_iter().next() {
-                return Poll::Ready(Some(Ok(first)));
+            // First: return any already-parsed events one at a time.
+            if let Some(event) = self.pending_events.pop_front() {
+                return Poll::Ready(Some(Ok(event)));
             }
 
             if self.done {
@@ -149,7 +168,9 @@ impl Stream for SseStream {
                     if let Ok(s) = std::str::from_utf8(&chunk) {
                         self.buffer.push_str(s);
                     }
-                    // Loop back to try draining again.
+                    // Parse whatever complete blocks are now available, then
+                    // loop back to yield them from pending_events.
+                    self.drain_events();
                 }
                 Poll::Ready(Some(Err(e))) => {
                     return Poll::Ready(Some(Err(PiAiError::Http(e))));
@@ -183,6 +204,7 @@ pub fn sse_stream_from_response(response: reqwest::Response) -> SseStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
 
     #[test]
     fn test_parse_block_simple() {
@@ -225,5 +247,92 @@ mod tests {
         let block = ": this is a comment\ndata: actual";
         let event = parse_block(block).unwrap();
         assert_eq!(event.data, "actual");
+    }
+
+    // ── Bug-fix regression tests ──────────────────────────────────────────────
+
+    /// Bug 1: multiple events arriving in one chunk must all be returned, not
+    /// just the first one.
+    #[tokio::test]
+    async fn test_multiple_events_in_one_chunk_all_returned() {
+        // Two complete SSE events concatenated in a single chunk.
+        let chunk = Bytes::from("data: first\n\ndata: second\n\n");
+
+        let byte_stream = futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(chunk)]);
+        let mut sse = SseStream::new(byte_stream);
+
+        let first = sse.next().await.expect("expected first event").unwrap();
+        assert_eq!(first.data, "first", "first event must not be dropped");
+
+        let second = sse.next().await.expect("expected second event").unwrap();
+        assert_eq!(second.data, "second", "second event must not be dropped");
+
+        assert!(
+            sse.next().await.is_none(),
+            "stream should be exhausted after two events"
+        );
+    }
+
+    /// Bug 2: when `\n\n` appears before `\r\n\r\n` in the buffer, the earlier
+    /// `\n\n` separator must be chosen so that events are not reordered.
+    #[test]
+    fn test_find_double_newline_prefers_earlier_position() {
+        // Layout: "data: a\n\ndata: b\r\n\r\n"
+        //                      ^^            ^^^^
+        //         \n\n at offset 8, \r\n\r\n at offset 17
+        let s = "data: a\n\ndata: b\r\n\r\n";
+        let pos = find_double_newline(s).unwrap();
+        // The \n\n is at byte 7 (after "data: a"), which is less than 15
+        // (\r\n\r\n after "data: b").
+        assert_eq!(
+            pos,
+            s.find("\n\n").unwrap(),
+            "should pick the earlier \\n\\n, not the later \\r\\n\\r\\n"
+        );
+    }
+
+    /// Mixed separators: a stream where blocks are separated by `\n\n` and
+    /// `\r\n\r\n` in alternation must yield every event in order.
+    #[tokio::test]
+    async fn test_mixed_separators_all_events_returned() {
+        // Block 1 terminated by \n\n, block 2 terminated by \r\n\r\n.
+        let chunk = Bytes::from("data: alpha\n\ndata: beta\r\n\r\ndata: gamma\n\n");
+
+        let byte_stream = futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(chunk)]);
+        let mut sse = SseStream::new(byte_stream);
+
+        let e1 = sse.next().await.unwrap().unwrap();
+        assert_eq!(e1.data, "alpha");
+
+        let e2 = sse.next().await.unwrap().unwrap();
+        assert_eq!(e2.data, "beta");
+
+        let e3 = sse.next().await.unwrap().unwrap();
+        assert_eq!(e3.data, "gamma");
+
+        assert!(sse.next().await.is_none());
+    }
+
+    /// A single SSE event whose bytes arrive split across two separate chunks
+    /// must still be assembled and returned correctly.
+    #[tokio::test]
+    async fn test_partial_event_across_chunk_boundaries() {
+        // The blank-line terminator (\n\n) is in the second chunk.
+        let chunk1 = Bytes::from("data: par");
+        let chunk2 = Bytes::from("tial\n\n");
+
+        let byte_stream = futures::stream::iter(vec![
+            Ok::<Bytes, reqwest::Error>(chunk1),
+            Ok::<Bytes, reqwest::Error>(chunk2),
+        ]);
+        let mut sse = SseStream::new(byte_stream);
+
+        let event = sse.next().await.expect("expected one event").unwrap();
+        assert_eq!(
+            event.data, "partial",
+            "event split across chunks must be reassembled correctly"
+        );
+
+        assert!(sse.next().await.is_none());
     }
 }

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::keyboard::kitty::{matches_event, parse_input};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EditorAction {
@@ -95,19 +95,11 @@ impl Default for KeybindingsManager {
         );
         bindings.insert(
             EditorAction::CursorWordLeft,
-            vec![
-                "alt+left".into(),
-                "ctrl+left".into(),
-                "alt+b".into(),
-            ],
+            vec!["alt+left".into(), "ctrl+left".into(), "alt+b".into()],
         );
         bindings.insert(
             EditorAction::CursorWordRight,
-            vec![
-                "alt+right".into(),
-                "ctrl+right".into(),
-                "alt+f".into(),
-            ],
+            vec!["alt+right".into(), "ctrl+right".into(), "alt+f".into()],
         );
         bindings.insert(
             EditorAction::CursorLineStart,
@@ -117,10 +109,7 @@ impl Default for KeybindingsManager {
             EditorAction::CursorLineEnd,
             vec!["end".into(), "ctrl+e".into()],
         );
-        bindings.insert(
-            EditorAction::DeleteCharBackward,
-            vec!["backspace".into()],
-        );
+        bindings.insert(EditorAction::DeleteCharBackward, vec!["backspace".into()]);
         bindings.insert(
             EditorAction::DeleteCharForward,
             vec!["delete".into(), "ctrl+d".into()],
@@ -133,14 +122,8 @@ impl Default for KeybindingsManager {
             EditorAction::DeleteWordForward,
             vec!["alt+d".into(), "alt+delete".into()],
         );
-        bindings.insert(
-            EditorAction::DeleteToLineStart,
-            vec!["ctrl+u".into()],
-        );
-        bindings.insert(
-            EditorAction::DeleteToLineEnd,
-            vec!["ctrl+k".into()],
-        );
+        bindings.insert(EditorAction::DeleteToLineStart, vec!["ctrl+u".into()]);
+        bindings.insert(EditorAction::DeleteToLineEnd, vec!["ctrl+k".into()]);
         bindings.insert(EditorAction::Yank, vec!["ctrl+y".into()]);
         bindings.insert(EditorAction::YankPop, vec!["alt+y".into()]);
         bindings.insert(EditorAction::Undo, vec!["ctrl+z".into()]);

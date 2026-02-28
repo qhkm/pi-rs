@@ -1,5 +1,5 @@
-use unicode_width::UnicodeWidthStr;
 use crate::components::traits::{Component, InputResult};
+use unicode_width::UnicodeWidthStr;
 
 /// Simple text display component with optional word wrapping.
 pub struct Text {

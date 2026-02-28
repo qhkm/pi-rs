@@ -13,56 +13,27 @@
 //! - [`overlay`] — Overlay/popup management system.
 //! - [`keyboard`] — Kitty keyboard protocol parser and configurable keybindings.
 
-pub mod terminal;
 pub mod components;
-pub mod rendering;
-pub mod overlay;
 pub mod keyboard;
+pub mod overlay;
+pub mod rendering;
+pub mod terminal;
 
 // Convenience re-exports for common types
 pub use components::{
-    Component,
-    InputResult,
-    Focusable,
-    CURSOR_MARKER,
-    Editor,
-    Input,
-    Loader,
-    Markdown,
-    SelectList,
-    SelectItem,
-    Container,
-    TuiBox,
-    Spacer,
-    Text,
-    TruncatedText,
+    Component, Container, Editor, Focusable, Input, InputResult, Loader, Markdown, SelectItem,
+    SelectList, Spacer, Text, TruncatedText, TuiBox, CURSOR_MARKER,
 };
 
-pub use terminal::Terminal;
 pub use terminal::process::ProcessTerminal;
 pub use terminal::virtual_term::VirtualTerminal;
+pub use terminal::Terminal;
 
-pub use rendering::DifferentialRenderer;
 pub use rendering::synchronized::{begin_sync, end_sync};
+pub use rendering::DifferentialRenderer;
 
-pub use overlay::{
-    OverlayManager,
-    OverlayOptions,
-    OverlayAnchor,
-    OverlayHandle,
-    SizeValue,
-};
+pub use overlay::{OverlayAnchor, OverlayHandle, OverlayManager, OverlayOptions, SizeValue};
 
-pub use keyboard::{
-    EditorAction,
-    KeybindingsManager,
-};
+pub use keyboard::{EditorAction, KeybindingsManager};
 
-pub use keyboard::kitty::{
-    Key,
-    KeyEvent,
-    KeyEventType,
-    Modifiers,
-    parse_input,
-    matches_key,
-};
+pub use keyboard::kitty::{matches_key, parse_input, Key, KeyEvent, KeyEventType, Modifiers};

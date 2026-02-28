@@ -1,6 +1,6 @@
 use crate::components::traits::{Component, Focusable, InputResult, CURSOR_MARKER};
 use crate::keyboard::keybindings::{EditorAction, KeybindingsManager};
-use crate::keyboard::kitty::{Key, KeyEventType, Modifiers, parse_input};
+use crate::keyboard::kitty::{parse_input, Key, KeyEventType, Modifiers};
 
 #[derive(Debug, Clone)]
 pub struct Selection {
@@ -165,11 +165,18 @@ impl Editor {
     // -----------------------------------------------------------------------
 
     fn current_line(&self) -> &str {
-        self.lines.get(self.cursor_line).map(|s| s.as_str()).unwrap_or("")
+        self.lines
+            .get(self.cursor_line)
+            .map(|s| s.as_str())
+            .unwrap_or("")
     }
 
     fn clamp_cursor_col(&mut self) {
-        let line_len = self.lines.get(self.cursor_line).map(|l| l.len()).unwrap_or(0);
+        let line_len = self
+            .lines
+            .get(self.cursor_line)
+            .map(|l| l.len())
+            .unwrap_or(0);
         if self.cursor_col > line_len {
             self.cursor_col = line_len;
         }
@@ -201,7 +208,9 @@ impl Editor {
         }
         let mut p = pos - 1;
         while !s.is_char_boundary(p) {
-            if p == 0 { return 0; }
+            if p == 0 {
+                return 0;
+            }
             p -= 1;
         }
         p
@@ -222,17 +231,29 @@ impl Editor {
         let substr = &s[..pos];
         let chars: Vec<char> = substr.chars().collect();
         let mut i = chars.len();
-        while i > 0 && chars[i - 1] == ' ' { i -= 1; }
-        while i > 0 && chars[i - 1] != ' ' { i -= 1; }
-        substr.char_indices().nth(i).map(|(idx, _)| idx).unwrap_or(0)
+        while i > 0 && chars[i - 1] == ' ' {
+            i -= 1;
+        }
+        while i > 0 && chars[i - 1] != ' ' {
+            i -= 1;
+        }
+        substr
+            .char_indices()
+            .nth(i)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0)
     }
 
     fn word_right(s: &str, pos: usize) -> usize {
         let substr = &s[pos..];
         let mut past_word = false;
         for (idx, ch) in substr.char_indices() {
-            if ch != ' ' { past_word = true; }
-            if past_word && ch == ' ' { return pos + idx; }
+            if ch != ' ' {
+                past_word = true;
+            }
+            if past_word && ch == ' ' {
+                return pos + idx;
+            }
         }
         s.len()
     }
@@ -352,7 +373,9 @@ impl Editor {
     }
 
     fn yank(&mut self) {
-        if self.kill_ring.is_empty() { return; }
+        if self.kill_ring.is_empty() {
+            return;
+        }
         let text = self.kill_ring[self.kill_ring_index].clone();
         self.push_undo();
         let line = &mut self.lines[self.cursor_line];

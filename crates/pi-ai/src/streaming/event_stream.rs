@@ -19,7 +19,10 @@ pub struct EventStreamSender {
 impl EventStreamSender {
     /// Send a single stream event to the consumer.
     pub async fn push(&self, event: StreamEvent) -> Result<()> {
-        self.tx.send(event).await.map_err(|_| PiAiError::StreamClosed)
+        self.tx
+            .send(event)
+            .await
+            .map_err(|_| PiAiError::StreamClosed)
     }
 
     /// Signal successful completion. Closes the event channel after this call.
@@ -168,9 +171,14 @@ mod tests {
         let msg_clone = msg.clone();
 
         tokio::spawn(async move {
-            let event = StreamEvent::Start { partial: msg_clone.clone() };
+            let event = StreamEvent::Start {
+                partial: msg_clone.clone(),
+            };
             tx.push(event).await.unwrap();
-            let done = StreamEvent::Done { reason: StopReason::Stop, message: msg_clone };
+            let done = StreamEvent::Done {
+                reason: StopReason::Stop,
+                message: msg_clone,
+            };
             tx.push(done).await.unwrap();
             tx.end(msg);
         });
@@ -187,7 +195,9 @@ mod tests {
         let msg_for_end = msg.clone();
 
         tokio::spawn(async move {
-            let event = StreamEvent::Start { partial: msg.clone() };
+            let event = StreamEvent::Start {
+                partial: msg.clone(),
+            };
             tx.push(event).await.unwrap();
             tx.end(msg_for_end);
         });

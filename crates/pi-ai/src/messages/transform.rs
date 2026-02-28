@@ -130,7 +130,8 @@ fn strip_thinking_blocks(messages: Vec<Message>) -> Vec<Message> {
         .into_iter()
         .map(|m| match m {
             Message::Assistant(mut am) => {
-                am.content.retain(|c| !matches!(c, Content::Thinking { .. }));
+                am.content
+                    .retain(|c| !matches!(c, Content::Thinking { .. }));
                 Message::Assistant(am)
             }
             other => other,
@@ -177,9 +178,19 @@ fn normalise_tool_call_ids(messages: Vec<Message>) -> Vec<Message> {
                     .content
                     .into_iter()
                     .map(|c| match c {
-                        Content::ToolCall { id, name, arguments, thought_signature } => {
+                        Content::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            thought_signature,
+                        } => {
                             let new_id = id_map.get(&id).cloned().unwrap_or(id);
-                            Content::ToolCall { id: new_id, name, arguments, thought_signature }
+                            Content::ToolCall {
+                                id: new_id,
+                                name,
+                                arguments,
+                                thought_signature,
+                            }
                         }
                         other => other,
                     })
@@ -209,8 +220,10 @@ fn merge_consecutive_user_messages(messages: Vec<Message>) -> Vec<Message> {
                     let new_blocks = to_blocks(um.content);
                     match &mut prev.content {
                         UserContent::Text(t) => {
-                            let mut blocks =
-                                vec![Content::Text { text: t.clone(), text_signature: None }];
+                            let mut blocks = vec![Content::Text {
+                                text: t.clone(),
+                                text_signature: None,
+                            }];
                             blocks.extend(new_blocks);
                             prev.content = UserContent::Blocks(blocks);
                         }
@@ -252,7 +265,10 @@ fn merge_consecutive_assistant_messages(messages: Vec<Message>) -> Vec<Message> 
 
 fn to_blocks(content: UserContent) -> Vec<Content> {
     match content {
-        UserContent::Text(t) => vec![Content::Text { text: t, text_signature: None }],
+        UserContent::Text(t) => vec![Content::Text {
+            text: t,
+            text_signature: None,
+        }],
         UserContent::Blocks(b) => b,
     }
 }
@@ -277,7 +293,10 @@ pub fn tool_result_message(
     Message::ToolResult(ToolResultMessage {
         tool_call_id: tool_call_id.into(),
         tool_name: tool_name.into(),
-        content: vec![Content::Text { text: text.into(), text_signature: None }],
+        content: vec![Content::Text {
+            text: text.into(),
+            text_signature: None,
+        }],
         details: None,
         is_error,
         timestamp: Utc::now().timestamp_millis(),
@@ -313,12 +332,18 @@ mod tests {
                     thinking_signature: None,
                     redacted: false,
                 },
-                Content::Text { text: "hello".into(), text_signature: None },
+                Content::Text {
+                    text: "hello".into(),
+                    text_signature: None,
+                },
             ],
             StopReason::Stop,
         )];
 
-        let opts = TransformOptions { strip_thinking: true, ..Default::default() };
+        let opts = TransformOptions {
+            strip_thinking: true,
+            ..Default::default()
+        };
         let result = transform_messages(&messages, &opts);
 
         assert_eq!(result.len(), 1);
@@ -329,12 +354,12 @@ mod tests {
 
     #[test]
     fn test_merge_consecutive_user() {
-        let messages = vec![
-            Message::user("Hello"),
-            Message::user("World"),
-        ];
+        let messages = vec![Message::user("Hello"), Message::user("World")];
 
-        let opts = TransformOptions { merge_consecutive_user: true, ..Default::default() };
+        let opts = TransformOptions {
+            merge_consecutive_user: true,
+            ..Default::default()
+        };
         let result = transform_messages(&messages, &opts);
 
         assert_eq!(result.len(), 1);

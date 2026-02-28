@@ -1,6 +1,6 @@
-use unicode_width::UnicodeWidthStr;
 use crate::components::traits::{Component, Focusable, InputResult};
 use crate::keyboard::keybindings::{EditorAction, KeybindingsManager};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone)]
 pub struct SelectItem {
@@ -117,8 +117,7 @@ impl SelectList {
                 .iter()
                 .enumerate()
                 .filter(|(_, item)| {
-                    item.label.to_lowercase().contains(&f)
-                        || item.value.to_lowercase().contains(&f)
+                    item.label.to_lowercase().contains(&f) || item.value.to_lowercase().contains(&f)
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -131,7 +130,9 @@ impl SelectList {
     }
 
     fn ensure_scroll(&mut self) {
-        if self.filtered_items.is_empty() { return; }
+        if self.filtered_items.is_empty() {
+            return;
+        }
         if self.selected_index < self.scroll_offset {
             self.scroll_offset = self.selected_index;
         }
@@ -142,7 +143,9 @@ impl SelectList {
 
     fn move_up(&mut self) {
         let len = self.filtered_items.len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         if self.selected_index == 0 {
             self.selected_index = len - 1;
         } else {
@@ -154,7 +157,9 @@ impl SelectList {
 
     fn move_down(&mut self) {
         let len = self.filtered_items.len();
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         self.selected_index = (self.selected_index + 1) % len;
         self.ensure_scroll();
         self.dirty = true;
@@ -209,11 +214,7 @@ impl Component for SelectList {
         // Scroll indicator
         let total = self.filtered_items.len();
         if total > self.max_visible {
-            let info = format!(
-                "{}/{} (↑↓)",
-                self.selected_index + 1,
-                total
-            );
+            let info = format!("{}/{} (↑↓)", self.selected_index + 1, total);
             lines.push((self.theme.scroll_info)(&info));
         }
 
@@ -232,7 +233,8 @@ impl Component for SelectList {
             return InputResult::Consumed;
         }
 
-        if kb.matches(data, EditorAction::SelectDown) || kb.matches(data, EditorAction::CursorDown) {
+        if kb.matches(data, EditorAction::SelectDown) || kb.matches(data, EditorAction::CursorDown)
+        {
             self.move_down();
             return InputResult::Consumed;
         }
@@ -281,7 +283,9 @@ fn truncate_visible(s: &str, max_width: usize) -> String {
     let mut width = 0;
     for ch in s.chars() {
         let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-        if width + cw > max_width { break; }
+        if width + cw > max_width {
+            break;
+        }
         result.push(ch);
         width += cw;
     }

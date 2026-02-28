@@ -11,15 +11,14 @@ pub enum AgentMessage {
     /// Standard LLM message
     Llm(Message),
     /// System-injected context (skills, memory, etc.)
-    SystemContext {
-        content: String,
-        source: String,
-    },
+    SystemContext { content: String, source: String },
     /// Compaction summary replacing older messages
     CompactionSummary {
         summary: String,
-        replaced_count: usize,
-        original_token_count: u64,
+        /// Token count of the messages that were compacted
+        tokens_before: u64,
+        /// When the compaction occurred (millis since epoch)
+        timestamp: i64,
     },
     /// Extension-injected custom message
     Extension {
@@ -36,15 +35,15 @@ impl AgentMessage {
     pub fn to_llm_message(&self) -> Option<Message> {
         match self {
             AgentMessage::Llm(msg) => Some(msg.clone()),
-            AgentMessage::SystemContext { content, .. } => {
-                Some(Message::user(content.clone()))
-            }
-            AgentMessage::CompactionSummary { summary, .. } => {
-                Some(Message::user(
-                    format!("[Previous conversation summary]\n{summary}"),
-                ))
-            }
-            AgentMessage::Extension { data, include_in_context, .. } => {
+            AgentMessage::SystemContext { content, .. } => Some(Message::user(content.clone())),
+            AgentMessage::CompactionSummary { summary, .. } => Some(Message::user(format!(
+                "[Previous conversation summary]\n{summary}"
+            ))),
+            AgentMessage::Extension {
+                data,
+                include_in_context,
+                ..
+            } => {
                 if *include_in_context {
                     Some(Message::user(data.to_string()))
                 } else {

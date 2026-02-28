@@ -113,10 +113,7 @@ impl OverlayManager {
 
     /// Returns `true` if there is an active, visible overlay.
     pub fn has_overlay(&self) -> bool {
-        self.overlay
-            .as_ref()
-            .map(|e| !e.hidden)
-            .unwrap_or(false)
+        self.overlay.as_ref().map(|e| !e.hidden).unwrap_or(false)
     }
 
     /// Render the overlay and return a list of `(col, row, lines)` tuples
@@ -150,9 +147,7 @@ impl OverlayManager {
                     .iter()
                     .map(|l| {
                         // Approximate visual width by stripping ANSI and measuring
-                        l.chars()
-                            .filter(|c| !c.is_control())
-                            .count() as u16
+                        l.chars().filter(|c| !c.is_control()).count() as u16
                     })
                     .max()
                     .unwrap_or(terminal_width / 2);
@@ -188,10 +183,7 @@ impl OverlayManager {
                 terminal_width.saturating_sub(overlay_width),
                 terminal_height.saturating_sub(overlay_height),
             ),
-            OverlayAnchor::TopCenter => (
-                (terminal_width.saturating_sub(overlay_width)) / 2,
-                0,
-            ),
+            OverlayAnchor::TopCenter => ((terminal_width.saturating_sub(overlay_width)) / 2, 0),
             OverlayAnchor::BottomCenter => (
                 (terminal_width.saturating_sub(overlay_width)) / 2,
                 terminal_height.saturating_sub(overlay_height),
@@ -200,9 +192,11 @@ impl OverlayManager {
 
         // Apply offsets (clamped to terminal bounds)
         let col = (base_col as i32 + entry.options.offset_x as i32)
-            .clamp(0, (terminal_width.saturating_sub(overlay_width)) as i32) as u16;
+            .clamp(0, (terminal_width.saturating_sub(overlay_width)) as i32)
+            as u16;
         let row = (base_row as i32 + entry.options.offset_y as i32)
-            .clamp(0, (terminal_height.saturating_sub(overlay_height)) as i32) as u16;
+            .clamp(0, (terminal_height.saturating_sub(overlay_height)) as i32)
+            as u16;
 
         vec![(col, row, lines)]
     }

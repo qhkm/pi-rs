@@ -1,5 +1,5 @@
-pub mod traits;
 pub mod registry;
+pub mod traits;
 
-pub use traits::{AgentTool, ToolContext, ToolProgress, ToolResult};
 pub use registry::ToolRegistry;
+pub use traits::{AgentTool, ToolContext, ToolProgress, ToolResult};

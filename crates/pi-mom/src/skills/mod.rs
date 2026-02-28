@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use serde::{Serialize, Deserialize};
 
 /// A skill (custom CLI tool) that mom can create and use
 #[derive(Debug, Clone, Serialize, Deserialize)]

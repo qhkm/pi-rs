@@ -1,5 +1,5 @@
-pub mod pod;
 pub mod model;
+pub mod pod;
 
-pub use pod::{Config, Pod, Gpu};
 pub use model::ModelConfig;
+pub use pod::{Config, Gpu, Pod};

@@ -12,7 +12,13 @@ pub fn calculate_cost(pricing: &ModelCost, usage: &Usage) -> UsageCost {
 
     let total = input_cost + output_cost + cache_read_cost + cache_write_cost;
 
-    UsageCost { input: input_cost, output: output_cost, cache_read: cache_read_cost, cache_write: cache_write_cost, total }
+    UsageCost {
+        input: input_cost,
+        output: output_cost,
+        cache_read: cache_read_cost,
+        cache_write: cache_write_cost,
+        total,
+    }
 }
 
 /// Annotate a `Usage` struct with cost information derived from the given pricing.
@@ -29,8 +35,8 @@ mod tests {
     #[test]
     fn test_calculate_cost() {
         let pricing = ModelCost {
-            input: 3.0,    // $3 / M tokens
-            output: 15.0,  // $15 / M tokens
+            input: 3.0,   // $3 / M tokens
+            output: 15.0, // $15 / M tokens
             cache_read: 0.3,
             cache_write: 3.75,
         };
