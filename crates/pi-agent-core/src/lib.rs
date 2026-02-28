@@ -11,3 +11,4 @@ pub use tools::{AgentTool, ToolContext, ToolProgress, ToolRegistry, ToolResult};
 // Agent core re-exports
 pub use agent::{Agent, AgentConfig, AgentSharedState, AgentState};
 pub use agent::{AgentEndReason, AgentEvent};
+pub use agent::ContextTransformFn;

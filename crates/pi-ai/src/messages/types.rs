@@ -228,7 +228,7 @@ impl std::fmt::Display for StopReason {
 
 // ─── Thinking levels ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
     Minimal,
@@ -240,14 +240,31 @@ pub enum ThinkingLevel {
 
 impl ThinkingLevel {
     /// Returns a token budget appropriate for this thinking level.
+    ///
+    /// The lookup order is:
+    /// 1. `budgets.xhigh` / `budgets.high` / etc. if explicitly set
+    /// 2. Hard-coded defaults that match the canonical budget table
+    ///
+    /// For `XHigh`, a value of `0` means "no limit" (provider maximum).
     pub fn to_budget_tokens(self, budgets: &ThinkingBudgets) -> u32 {
         match self {
-            ThinkingLevel::Minimal => budgets.minimal.unwrap_or(512),
-            ThinkingLevel::Low => budgets.low.unwrap_or(1_024),
-            ThinkingLevel::Medium => budgets.medium.unwrap_or(4_096),
-            ThinkingLevel::High => budgets.high.unwrap_or(10_000),
-            ThinkingLevel::XHigh => 32_000,
+            ThinkingLevel::Minimal => budgets.minimal.unwrap_or(1_024),
+            ThinkingLevel::Low => budgets.low.unwrap_or(4_096),
+            ThinkingLevel::Medium => budgets.medium.unwrap_or(10_240),
+            ThinkingLevel::High => budgets.high.unwrap_or(32_768),
+            ThinkingLevel::XHigh => budgets.xhigh.unwrap_or(0),
         }
+    }
+
+    /// Returns all variants in ascending budget order.
+    pub fn all() -> &'static [ThinkingLevel] {
+        &[
+            ThinkingLevel::Minimal,
+            ThinkingLevel::Low,
+            ThinkingLevel::Medium,
+            ThinkingLevel::High,
+            ThinkingLevel::XHigh,
+        ]
     }
 }
 
@@ -257,6 +274,8 @@ pub struct ThinkingBudgets {
     pub low: Option<u32>,
     pub medium: Option<u32>,
     pub high: Option<u32>,
+    /// XHigh budget. `Some(0)` or `None` means "provider maximum / no limit".
+    pub xhigh: Option<u32>,
 }
 
 // ─── Messages ─────────────────────────────────────────────────────────────────

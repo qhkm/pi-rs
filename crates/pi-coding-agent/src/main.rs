@@ -86,6 +86,9 @@ async fn main() -> Result<()> {
         compaction: CompactionSettings::default(),
         thinking_level,
         cwd: cwd.clone(),
+        api_key_override: None,
+        api_key_resolver: None,
+        thinking_budgets: None,
     };
 
     let agent = Agent::new(config);
@@ -122,6 +125,26 @@ async fn main() -> Result<()> {
     agent
         .register_tool(Arc::new(pi_coding_agent::tools::ls::LsTool::new()))
         .await;
+
+    // Discover and register skills as callable tools.
+    let skill_catalog =
+        pi_coding_agent::skills::SkillCatalog::discover(std::path::Path::new(&cwd))?;
+    let skill_tools = pi_coding_agent::skills::register_skill_tools(&agent, &skill_catalog).await;
+    if skill_tools > 0 {
+        tracing::info!("Registered {} skill tools", skill_tools);
+    }
+
+    // Discover and register extension tools.
+    let extensions = pi_coding_agent::extensions::discover_extensions(std::path::Path::new(&cwd))?;
+    let extension_tools =
+        pi_coding_agent::extensions::register_extension_tools(&agent, &extensions).await;
+    if extension_tools > 0 {
+        tracing::info!(
+            "Registered {} extension tools from {} extensions",
+            extension_tools,
+            extensions.len()
+        );
+    }
 
     let mut session_manager = init_session(&args, &cwd, &agent).await?;
 

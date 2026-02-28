@@ -1,12 +1,37 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
-use pi_agent_core::messages::AgentMessage;
+use pi_agent_core::context::compaction::{
+    build_branch_summary_prompt, estimate_tokens_str, serialize_conversation,
+    BranchSummarizationSettings,
+};
+use pi_agent_core::messages::{AgentMessage, to_llm_messages};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use super::lock::SessionLock;
 use super::persistence::{SessionEntry, SessionHeader};
+
+/// A node in the session entry tree.
+///
+/// Each entry in the JSONL file forms a DAG (typically a tree) via parent_id links.
+/// `TreeNode` surfaces this structure for navigation and display.
+#[derive(Debug, Clone)]
+pub struct TreeNode {
+    /// The unique ID of this entry.
+    pub entry_id: String,
+    /// The ID of the parent entry, or `None` for root entries.
+    pub parent_id: Option<String>,
+    /// IDs of all direct children of this node.
+    pub children: Vec<String>,
+    /// The discriminant of the underlying `SessionEntry` variant, e.g. `"message"`.
+    pub entry_type: String,
+    /// A short human-readable description of the entry for display purposes.
+    pub summary: String,
+}
 
 /// Manages session lifecycle: create, load, save, list
 pub struct SessionManager {
@@ -18,6 +43,12 @@ pub struct SessionManager {
     session_id: Option<String>,
     /// Last entry ID for parent threading
     last_entry_id: Option<String>,
+    /// Advisory file lock held for the lifetime of the active session.
+    ///
+    /// Acquiring the lock prevents a second process (or a second
+    /// `SessionManager` in the same process) from opening the same session
+    /// file concurrently and corrupting it with interleaved writes.
+    active_lock: Option<SessionLock>,
 }
 
 impl SessionManager {
@@ -27,8 +58,12 @@ impl SessionManager {
             current_session: None,
             session_id: None,
             last_entry_id: None,
+            active_lock: None,
         }
     }
+
+    /// Default timeout used when trying to acquire a session lock.
+    const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Create a new session
     pub async fn create_session(&mut self, cwd: &str) -> Result<String> {
@@ -79,9 +114,28 @@ impl SessionManager {
             last_entry_id = Some(entry_id);
         }
 
+        // Release any lock held from a previous session before acquiring a
+        // new one.  This ensures we never hold two locks simultaneously (which
+        // could deadlock if the manager is reused) and prevents a WouldBlock
+        // error when opening the same path that was previously loaded.
+        self.active_lock = None;
+
+        // Acquire an exclusive advisory lock before committing the state
+        // change.  This prevents a second SessionManager (in another process
+        // or task) from opening the same file concurrently.
+        let lock = SessionLock::acquire_with_timeout(path, Self::LOCK_TIMEOUT)
+            .with_context(|| {
+                format!(
+                    "Could not acquire lock for session file '{}'. \
+                     Another pi process may already have this session open.",
+                    path.display()
+                )
+            })?;
+
         self.current_session = Some(path.to_path_buf());
         self.session_id = Some(header.id);
         self.last_entry_id = last_entry_id;
+        self.active_lock = Some(lock);
         Ok(messages)
     }
 
@@ -263,6 +317,397 @@ impl SessionManager {
         Ok(new_session_path)
     }
 
+    // -----------------------------------------------------------------------
+    // Tree navigation
+    // -----------------------------------------------------------------------
+
+    /// Read all entries from the active session file and return them as a flat
+    /// list of [`TreeNode`]s with `children` already populated.
+    ///
+    /// The ordering of the returned `Vec` mirrors the on-disk order (i.e. the
+    /// order entries were appended), so the root node(s) appear near the front.
+    pub async fn get_tree(&self) -> Result<Vec<TreeNode>> {
+        let path = self
+            .current_session
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+
+        let data = fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read session file: {}", path.display()))?;
+
+        // Pass 1: parse every non-header line into (id, parent_id, entry_type, summary).
+        let mut raw: Vec<(String, Option<String>, String, String)> = Vec::new();
+        for (i, line) in data.lines().enumerate() {
+            if i == 0 || line.trim().is_empty() {
+                // Skip the session header and blank lines.
+                continue;
+            }
+            let entry: SessionEntry = match serde_json::from_str(line) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let (entry_type, parent_id, summary) = Self::describe_entry(&entry);
+            raw.push((entry.id().to_string(), parent_id, entry_type, summary));
+        }
+
+        // Pass 2: build an id → children index.
+        let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, parent_id, _, _) in &raw {
+            // Ensure every node has an entry (even if it ends up with no children).
+            children_map.entry(id.clone()).or_default();
+            if let Some(pid) = parent_id {
+                children_map
+                    .entry(pid.clone())
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
+
+        // Pass 3: assemble TreeNode list in original order.
+        let nodes = raw
+            .into_iter()
+            .map(|(id, parent_id, entry_type, summary)| {
+                let children = children_map.get(&id).cloned().unwrap_or_default();
+                TreeNode {
+                    entry_id: id,
+                    parent_id,
+                    children,
+                    entry_type,
+                    summary,
+                }
+            })
+            .collect();
+
+        Ok(nodes)
+    }
+
+    /// Navigate to a specific entry by its ID.
+    ///
+    /// Traces the ancestor chain from `entry_id` back to the root, then returns
+    /// the `AgentMessage` payloads for every `Message` entry along that path in
+    /// root-first order.  This sequence can be used directly as the conversation
+    /// context to restore when resuming at `entry_id`.
+    ///
+    /// Also updates `last_entry_id` so that subsequent [`append_message`] calls
+    /// chain from the target entry.
+    pub async fn navigate_to(&mut self, entry_id: &str) -> Result<Vec<AgentMessage>> {
+        let path = self
+            .current_session
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?
+            .clone();
+
+        let data = fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read session file: {}", path.display()))?;
+
+        // Build two maps: id → entry  and  id → parent_id.
+        let mut entry_map: HashMap<String, SessionEntry> = HashMap::new();
+        let mut parent_of: HashMap<String, Option<String>> = HashMap::new();
+
+        for (i, line) in data.lines().enumerate() {
+            if i == 0 || line.trim().is_empty() {
+                continue;
+            }
+            let entry: SessionEntry = match serde_json::from_str(line) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let id = entry.id().to_string();
+            let parent_id = Self::entry_parent_id(&entry);
+            parent_of.insert(id.clone(), parent_id);
+            entry_map.insert(id, entry);
+        }
+
+        // Verify the target entry actually exists.
+        if !entry_map.contains_key(entry_id) {
+            return Err(anyhow::anyhow!(
+                "Entry ID '{}' not found in session",
+                entry_id
+            ));
+        }
+
+        // Walk the ancestor chain from entry_id up to the root.
+        let mut path_ids: Vec<String> = Vec::new();
+        let mut cursor = Some(entry_id.to_string());
+        while let Some(current) = cursor {
+            path_ids.push(current.clone());
+            cursor = parent_of.get(&current).and_then(|p| p.clone());
+        }
+        path_ids.reverse(); // root-first
+
+        // Collect AgentMessages for Message entries along the path.
+        let messages: Vec<AgentMessage> = path_ids
+            .iter()
+            .filter_map(|id| {
+                entry_map.get(id).and_then(|entry| match entry {
+                    SessionEntry::Message { message, .. } => Some(message.clone()),
+                    _ => None,
+                })
+            })
+            .collect();
+
+        // Update the manager state so new entries continue from here.
+        self.last_entry_id = Some(entry_id.to_string());
+
+        Ok(messages)
+    }
+
+    /// Return all nodes that are branch points — entries with more than one child.
+    ///
+    /// Branch points are the positions in the tree where the conversation
+    /// diverged; useful for presenting navigation choices to the user.
+    pub async fn get_branch_points(&self) -> Result<Vec<TreeNode>> {
+        let all_nodes = self.get_tree().await?;
+        Ok(all_nodes
+            .into_iter()
+            .filter(|node| node.children.len() > 1)
+            .collect())
+    }
+
+    // -----------------------------------------------------------------------
+    // Branch summarization
+    // -----------------------------------------------------------------------
+
+    /// Collect the `AgentMessage`s on the ancestor path up to `entry_id` and
+    /// return the `(system_prompt, user_prompt)` pair that an LLM should use
+    /// to produce a branch-point summary.
+    ///
+    /// This method deliberately does **not** call the LLM itself; it only
+    /// builds the prompt so that callers can decide which provider/model to
+    /// use.  The returned prompts are produced by
+    /// [`build_branch_summary_prompt`] and therefore follow the branch-summary
+    /// structured format.
+    ///
+    /// # Errors
+    /// Returns an error if no session is active or if `entry_id` does not
+    /// exist in the current session file.
+    pub async fn build_branch_summary_prompts(
+        &self,
+        entry_id: &str,
+        _settings: &BranchSummarizationSettings,
+    ) -> Result<(String, String)> {
+        let messages = self.collect_messages_up_to(entry_id).await?;
+        let llm_messages = to_llm_messages(&messages);
+        let messages_text = serialize_conversation(&llm_messages);
+        Ok(build_branch_summary_prompt(&messages_text))
+    }
+
+    /// Collect the conversation messages on the path from the root up to
+    /// `entry_id` and return them serialized as a human-readable string
+    /// suitable for passing to a summarization LLM.
+    ///
+    /// This is useful when you want the raw text rather than the prompt pair,
+    /// e.g. for token estimation before deciding whether to summarize.
+    ///
+    /// # Errors
+    /// Returns an error if no session is active or if `entry_id` does not
+    /// exist in the current session file.
+    pub async fn collect_messages_up_to(&self, entry_id: &str) -> Result<Vec<AgentMessage>> {
+        let path = self
+            .current_session
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?;
+
+        let data = fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read session file: {}", path.display()))?;
+
+        // Build id → entry and id → parent_id maps.
+        let mut entry_map: HashMap<String, SessionEntry> = HashMap::new();
+        let mut parent_of: HashMap<String, Option<String>> = HashMap::new();
+
+        for (i, line) in data.lines().enumerate() {
+            if i == 0 || line.trim().is_empty() {
+                continue;
+            }
+            let entry: SessionEntry = match serde_json::from_str(line) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let id = entry.id().to_string();
+            let parent_id = Self::entry_parent_id(&entry);
+            parent_of.insert(id.clone(), parent_id);
+            entry_map.insert(id, entry);
+        }
+
+        if !entry_map.contains_key(entry_id) {
+            return Err(anyhow::anyhow!(
+                "Entry ID '{}' not found in session",
+                entry_id
+            ));
+        }
+
+        // Trace ancestor chain from entry_id to root.
+        let mut path_ids: Vec<String> = Vec::new();
+        let mut cursor = Some(entry_id.to_string());
+        while let Some(current) = cursor {
+            path_ids.push(current.clone());
+            cursor = parent_of.get(&current).and_then(|p| p.clone());
+        }
+        path_ids.reverse(); // root-first
+
+        // Collect AgentMessage payloads for Message entries on the path.
+        let messages: Vec<AgentMessage> = path_ids
+            .iter()
+            .filter_map(|id| {
+                entry_map.get(id).and_then(|entry| match entry {
+                    SessionEntry::Message { message, .. } => Some(message.clone()),
+                    _ => None,
+                })
+            })
+            .collect();
+
+        Ok(messages)
+    }
+
+    /// Serialize the messages up to `entry_id` and return their estimated
+    /// token count.  Useful for deciding whether branch summarization is
+    /// warranted before actually building the prompt.
+    pub async fn estimate_branch_tokens(&self, entry_id: &str) -> Result<u64> {
+        let messages = self.collect_messages_up_to(entry_id).await?;
+        let llm_messages = to_llm_messages(&messages);
+        let text = serialize_conversation(&llm_messages);
+        Ok(estimate_tokens_str(&text))
+    }
+
+    /// Persist a pre-computed branch summary as a [`SessionEntry::BranchSummary`]
+    /// in the active session file.
+    ///
+    /// Call this after receiving the LLM response for the prompts produced by
+    /// [`build_branch_summary_prompts`].  The `tokens_before` value should be
+    /// the token estimate for the messages that were summarized, obtainable via
+    /// [`estimate_branch_tokens`].
+    ///
+    /// Returns the entry ID of the newly appended `BranchSummary` entry.
+    pub async fn append_branch_summary(
+        &mut self,
+        branch_entry_id: &str,
+        summary: String,
+        tokens_before: u64,
+    ) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        let entry = SessionEntry::BranchSummary {
+            id: id.clone(),
+            branch_entry_id: branch_entry_id.to_string(),
+            parent_id: self.last_entry_id.clone(),
+            timestamp: Utc::now(),
+            summary,
+            tokens_before,
+        };
+        self.append_entry(&entry).await?;
+        Ok(id)
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /// Extract (entry_type, parent_id, summary) from a `SessionEntry`.
+    fn describe_entry(entry: &SessionEntry) -> (String, Option<String>, String) {
+        match entry {
+            SessionEntry::Message {
+                parent_id, message, ..
+            } => {
+                let summary = match message {
+                    AgentMessage::Llm(msg) => {
+                        let text = msg.text_content();
+                        let truncated = if text.len() > 80 {
+                            format!("{}...", &text[..80])
+                        } else {
+                            text
+                        };
+                        let role = if msg.is_user() {
+                            "user"
+                        } else if msg.is_assistant() {
+                            "assistant"
+                        } else {
+                            "tool_result"
+                        };
+                        format!("[{}] {}", role, truncated)
+                    }
+                    AgentMessage::SystemContext { content, source } => {
+                        format!("[system:{source}] {}", Self::truncate(content, 60))
+                    }
+                    AgentMessage::CompactionSummary { summary, .. } => {
+                        format!("[compaction] {}", Self::truncate(summary, 60))
+                    }
+                    AgentMessage::Extension { type_name, .. } => {
+                        format!("[extension:{type_name}]")
+                    }
+                };
+                ("message".to_string(), parent_id.clone(), summary)
+            }
+            SessionEntry::Compaction {
+                parent_id, summary, ..
+            } => (
+                "compaction".to_string(),
+                parent_id.clone(),
+                format!("[compaction] {}", Self::truncate(summary, 60)),
+            ),
+            SessionEntry::ModelChange {
+                parent_id,
+                model,
+                provider,
+                ..
+            } => (
+                "model_change".to_string(),
+                parent_id.clone(),
+                format!("[model] {provider}/{model}"),
+            ),
+            SessionEntry::ThinkingLevelChange {
+                parent_id, level, ..
+            } => (
+                "thinking_level_change".to_string(),
+                parent_id.clone(),
+                format!("[thinking] level={level}"),
+            ),
+            SessionEntry::Label {
+                parent_id, label, ..
+            } => (
+                "label".to_string(),
+                parent_id.clone(),
+                format!("[label] {label}"),
+            ),
+            SessionEntry::BranchSummary {
+                parent_id,
+                summary,
+                branch_entry_id,
+                ..
+            } => (
+                "branch_summary".to_string(),
+                parent_id.clone(),
+                format!(
+                    "[branch_summary@{}] {}",
+                    &branch_entry_id[..branch_entry_id.len().min(8)],
+                    Self::truncate(summary, 50)
+                ),
+            ),
+        }
+    }
+
+    /// Extract the `parent_id` from any `SessionEntry` variant.
+    fn entry_parent_id(entry: &SessionEntry) -> Option<String> {
+        match entry {
+            SessionEntry::Message { parent_id, .. }
+            | SessionEntry::Compaction { parent_id, .. }
+            | SessionEntry::ModelChange { parent_id, .. }
+            | SessionEntry::ThinkingLevelChange { parent_id, .. }
+            | SessionEntry::Label { parent_id, .. }
+            | SessionEntry::BranchSummary { parent_id, .. } => parent_id.clone(),
+        }
+    }
+
+    /// Truncate a string to at most `max_chars` characters, appending `...` if cut.
+    fn truncate(s: &str, max_chars: usize) -> String {
+        if s.len() > max_chars {
+            format!("{}...", &s[..max_chars])
+        } else {
+            s.to_string()
+        }
+    }
+
     async fn initialize_session_file(
         &mut self,
         cwd: &str,
@@ -278,10 +723,29 @@ impl SessionManager {
         let header_json = serde_json::to_string(&header)?;
         file.write_all(header_json.as_bytes()).await?;
         file.write_all(b"\n").await?;
+        // Flush the file to disk before acquiring the lock so that any
+        // concurrent reader sees a valid header immediately.
+        drop(file);
+
+        // Acquire an exclusive advisory lock on the newly-created session file.
+        // This prevents another SessionManager (in a different process or the
+        // same process) from opening the same file for writing while this
+        // manager is active.  We drop any previously held lock first so that
+        // re-using a manager for multiple successive sessions does not
+        // deadlock on itself.
+        self.active_lock = None; // release previous lock if any
+        let lock = SessionLock::acquire_with_timeout(&path, Self::LOCK_TIMEOUT)
+            .with_context(|| {
+                format!(
+                    "Could not acquire lock for new session file '{}'.",
+                    path.display()
+                )
+            })?;
 
         self.current_session = Some(path);
         self.session_id = Some(id.clone());
         self.last_entry_id = None;
+        self.active_lock = Some(lock);
         Ok(id)
     }
 }
@@ -789,6 +1253,503 @@ mod tests {
             .fork("some-id", "/tmp/work")
             .await
             .expect_err("fork without session should fail");
+        assert!(err.to_string().contains("No active session"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // Tree navigation tests
+    // -----------------------------------------------------------------------
+
+    /// Verify that `get_tree` correctly builds parent→child relationships for a
+    /// simple linear chain: root → m1 → m2 → m3.
+    #[tokio::test]
+    async fn get_tree_builds_linear_chain() {
+        let dir = temp_dir("tree-linear");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+
+        let id1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("first")))
+            .await
+            .expect("first");
+        let id2 = manager
+            .append_message(AgentMessage::from_llm(Message::user("second")))
+            .await
+            .expect("second");
+        let id3 = manager
+            .append_message(AgentMessage::from_llm(Message::user("third")))
+            .await
+            .expect("third");
+
+        let tree = manager.get_tree().await.expect("get_tree");
+
+        assert_eq!(tree.len(), 3);
+
+        let node1 = tree.iter().find(|n| n.entry_id == id1).expect("node1");
+        let node2 = tree.iter().find(|n| n.entry_id == id2).expect("node2");
+        let node3 = tree.iter().find(|n| n.entry_id == id3).expect("node3");
+
+        // Parentage
+        assert!(node1.parent_id.is_none(), "root has no parent");
+        assert_eq!(node2.parent_id.as_deref(), Some(id1.as_str()));
+        assert_eq!(node3.parent_id.as_deref(), Some(id2.as_str()));
+
+        // Children
+        assert_eq!(node1.children, vec![id2.clone()]);
+        assert_eq!(node2.children, vec![id3.clone()]);
+        assert!(node3.children.is_empty(), "leaf has no children");
+
+        // Entry types
+        assert_eq!(node1.entry_type, "message");
+        assert_eq!(node2.entry_type, "message");
+        assert_eq!(node3.entry_type, "message");
+
+        // Summaries contain role and content fragment
+        assert!(node1.summary.contains("first"), "summary includes text");
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `navigate_to` on a leaf entry should return every message along the path
+    /// from root → leaf in the correct (root-first) order.
+    #[tokio::test]
+    async fn navigate_to_leaf_returns_full_path() {
+        let dir = temp_dir("nav-leaf");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+
+        let _id1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("alpha")))
+            .await
+            .expect("alpha");
+        let _id2 = manager
+            .append_message(AgentMessage::from_llm(Message::user("beta")))
+            .await
+            .expect("beta");
+        let id3 = manager
+            .append_message(AgentMessage::from_llm(Message::user("gamma")))
+            .await
+            .expect("gamma");
+
+        let messages = manager.navigate_to(&id3).await.expect("navigate_to");
+
+        // All three messages should be returned, root-first.
+        assert_eq!(messages.len(), 3);
+        let texts: Vec<String> = messages
+            .iter()
+            .filter_map(|m| m.as_llm())
+            .map(|m| m.text_content())
+            .collect();
+        assert_eq!(texts, vec!["alpha", "beta", "gamma"]);
+
+        // After navigation, last_entry_id must point to the target so new
+        // appended messages chain from there.
+        manager
+            .append_message(AgentMessage::from_llm(Message::user("delta")))
+            .await
+            .expect("delta");
+
+        // Read back and verify parent of the new entry.
+        let path = manager.session_path().unwrap().to_path_buf();
+        let content = std::fs::read_to_string(&path).expect("read session");
+        let last_line = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .last()
+            .expect("last line");
+        let last_entry: SessionEntry =
+            serde_json::from_str(last_line).expect("parse last entry");
+        match last_entry {
+            SessionEntry::Message { parent_id, .. } => {
+                assert_eq!(parent_id.as_deref(), Some(id3.as_str()));
+            }
+            _ => panic!("expected message entry"),
+        }
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `navigate_to` on an intermediate (branch-point) entry should return only
+    /// the messages on the path up to that point, not beyond.
+    #[tokio::test]
+    async fn navigate_to_branch_point_returns_partial_path() {
+        let dir = temp_dir("nav-branch");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+
+        let id1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("root")))
+            .await
+            .expect("root");
+        let id2 = manager
+            .append_message(AgentMessage::from_llm(Message::user("branch-point")))
+            .await
+            .expect("branch-point");
+        // Simulate a branch: go back to id2 and append a diverging child.
+        manager.branch(&id2);
+        let _id3b = manager
+            .append_message(AgentMessage::from_llm(Message::user("branch-b")))
+            .await
+            .expect("branch-b");
+
+        // Now navigate_to id2 (the branch point itself).
+        let messages = manager.navigate_to(&id2).await.expect("navigate_to id2");
+
+        assert_eq!(messages.len(), 2);
+        let texts: Vec<String> = messages
+            .iter()
+            .filter_map(|m| m.as_llm())
+            .map(|m| m.text_content())
+            .collect();
+        assert_eq!(texts, vec!["root", "branch-point"]);
+
+        // Verify last_entry_id is now id2.
+        let _ = id1; // used above
+        manager
+            .append_message(AgentMessage::from_llm(Message::user("after-nav")))
+            .await
+            .expect("after-nav");
+        let path = manager.session_path().unwrap().to_path_buf();
+        let content = std::fs::read_to_string(&path).expect("read session");
+        let last_line = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .last()
+            .expect("last line");
+        let last_entry: SessionEntry =
+            serde_json::from_str(last_line).expect("parse last entry");
+        match last_entry {
+            SessionEntry::Message { parent_id, .. } => {
+                assert_eq!(parent_id.as_deref(), Some(id2.as_str()));
+            }
+            _ => panic!("expected message entry"),
+        }
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `get_branch_points` returns only entries that have two or more children.
+    #[tokio::test]
+    async fn get_branch_points_finds_forked_entries() {
+        let dir = temp_dir("branch-points");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+
+        // Build a tree:
+        //   m1 → m2 → m3   (linear tail — no branch)
+        //         ↓
+        //         m4         (second child of m1 creates a branch at m1)
+        let _id1_a = manager
+            .append_message(AgentMessage::from_llm(Message::user("before-branch")))
+            .await
+            .expect("before-branch");
+        let id_branch = manager
+            .append_message(AgentMessage::from_llm(Message::user("branch-root")))
+            .await
+            .expect("branch-root");
+        let _id3 = manager
+            .append_message(AgentMessage::from_llm(Message::user("arm-a")))
+            .await
+            .expect("arm-a");
+
+        // Go back to id_branch and append a second child → branch point.
+        manager.branch(&id_branch);
+        let _id4 = manager
+            .append_message(AgentMessage::from_llm(Message::user("arm-b")))
+            .await
+            .expect("arm-b");
+
+        let branch_points = manager
+            .get_branch_points()
+            .await
+            .expect("get_branch_points");
+
+        // Exactly one branch point: id_branch.
+        assert_eq!(branch_points.len(), 1);
+        assert_eq!(branch_points[0].entry_id, id_branch);
+        assert_eq!(branch_points[0].children.len(), 2);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `navigate_to` returns an error when the entry ID does not exist.
+    #[tokio::test]
+    async fn navigate_to_errors_on_missing_entry() {
+        let dir = temp_dir("nav-missing");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+        manager
+            .append_message(AgentMessage::from_llm(Message::user("hello")))
+            .await
+            .expect("append");
+
+        let err = manager
+            .navigate_to("does-not-exist")
+            .await
+            .expect_err("should fail");
+        assert!(err.to_string().contains("not found in session"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `get_tree` returns an error when no session is active.
+    #[tokio::test]
+    async fn get_tree_errors_without_active_session() {
+        let dir = temp_dir("tree-no-session");
+        let manager = SessionManager::new(dir.clone());
+        let err = manager
+            .get_tree()
+            .await
+            .expect_err("should fail without active session");
+        assert!(err.to_string().contains("No active session"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // Branch summarization tests
+    // -----------------------------------------------------------------------
+
+    /// `collect_messages_up_to` must return the messages on the ancestor path
+    /// from root to the target entry in root-first order, and only include
+    /// `Message` entries (not e.g. `ModelChange`).
+    #[tokio::test]
+    async fn collect_messages_up_to_returns_ancestor_path() {
+        use pi_agent_core::context::compaction::BranchSummarizationSettings;
+
+        let dir = temp_dir("collect-messages");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+
+        let _id1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("first message")))
+            .await
+            .expect("first");
+        let id2 = manager
+            .append_message(AgentMessage::from_llm(Message::user("second message")))
+            .await
+            .expect("second");
+        let _id3 = manager
+            .append_message(AgentMessage::from_llm(Message::user("third message")))
+            .await
+            .expect("third");
+
+        // Collect only up to id2 (not including id3)
+        let messages = manager
+            .collect_messages_up_to(&id2)
+            .await
+            .expect("collect_messages_up_to");
+
+        assert_eq!(messages.len(), 2, "should return exactly 2 messages (root to id2)");
+
+        let texts: Vec<String> = messages
+            .iter()
+            .filter_map(|m| m.as_llm())
+            .map(|m| m.text_content())
+            .collect();
+        assert_eq!(texts[0], "first message");
+        assert_eq!(texts[1], "second message");
+
+        // The third message must NOT appear.
+        assert!(
+            !texts.contains(&"third message".to_string()),
+            "id3 must not appear in path up to id2"
+        );
+
+        // Also verify that build_branch_summary_prompts returns well-formed prompts.
+        let settings = BranchSummarizationSettings::default();
+        let (sys, user) = manager
+            .build_branch_summary_prompts(&id2, &settings)
+            .await
+            .expect("build_branch_summary_prompts");
+
+        assert!(sys.contains("branch point"), "system prompt should be branch-specific");
+        assert!(user.contains("second message"), "user prompt must embed the messages");
+        assert!(user.contains("<conversation>"), "must have conversation tags");
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `collect_messages_up_to` on a branch arm must follow the arm's ancestor
+    /// chain — not include messages from sibling branches.
+    #[tokio::test]
+    async fn collect_messages_up_to_follows_branch_arm() {
+        let dir = temp_dir("collect-branch-arm");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+
+        // Shared root message
+        let id_root = manager
+            .append_message(AgentMessage::from_llm(Message::user("shared root")))
+            .await
+            .expect("root");
+
+        // Branch A: append two more messages
+        let id_a1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("arm-A step 1")))
+            .await
+            .expect("arm-A step 1");
+        let id_a2 = manager
+            .append_message(AgentMessage::from_llm(Message::user("arm-A step 2")))
+            .await
+            .expect("arm-A step 2");
+
+        // Branch B: go back to root and append a diverging message
+        manager.branch(&id_root);
+        let id_b1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("arm-B step 1")))
+            .await
+            .expect("arm-B step 1");
+
+        // collect_messages_up_to(id_a2) → should give [root, arm-A step 1, arm-A step 2]
+        let path_a = manager
+            .collect_messages_up_to(&id_a2)
+            .await
+            .expect("collect arm-A path");
+        let texts_a: Vec<String> = path_a
+            .iter()
+            .filter_map(|m| m.as_llm())
+            .map(|m| m.text_content())
+            .collect();
+        assert_eq!(texts_a, vec!["shared root", "arm-A step 1", "arm-A step 2"]);
+
+        // collect_messages_up_to(id_b1) → should give [root, arm-B step 1]
+        let path_b = manager
+            .collect_messages_up_to(&id_b1)
+            .await
+            .expect("collect arm-B path");
+        let texts_b: Vec<String> = path_b
+            .iter()
+            .filter_map(|m| m.as_llm())
+            .map(|m| m.text_content())
+            .collect();
+        assert_eq!(texts_b, vec!["shared root", "arm-B step 1"]);
+
+        // Sanity: make sure the id variables are actually used.
+        let _ = (id_root, id_a1, id_b1);
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `append_branch_summary` persists a `BranchSummary` entry that can be
+    /// round-tripped through JSON and appears correctly in `get_tree`.
+    #[tokio::test]
+    async fn append_branch_summary_persists_entry() {
+        let dir = temp_dir("branch-summary-persist");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+
+        let id1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("refactor auth module")))
+            .await
+            .expect("first message");
+
+        let summary_text = "## Goal\nRefactor auth module\n\n## Files Modified\n- modified: src/auth.rs";
+        let summary_id = manager
+            .append_branch_summary(&id1, summary_text.to_string(), 512)
+            .await
+            .expect("append_branch_summary");
+
+        // The returned ID must be a non-empty string.
+        assert!(!summary_id.is_empty());
+
+        // Read back from disk and verify the entry round-trips correctly.
+        let path = manager.session_path().unwrap().to_path_buf();
+        let content = std::fs::read_to_string(&path).expect("read session file");
+        let last_line = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .last()
+            .expect("last line");
+
+        let entry: SessionEntry =
+            serde_json::from_str(last_line).expect("branch summary must be valid JSON");
+        match &entry {
+            SessionEntry::BranchSummary {
+                id,
+                branch_entry_id,
+                summary,
+                tokens_before,
+                ..
+            } => {
+                assert_eq!(id, &summary_id);
+                assert_eq!(branch_entry_id, &id1);
+                assert_eq!(summary, summary_text);
+                assert_eq!(*tokens_before, 512u64);
+            }
+            other => panic!("expected BranchSummary, got {:?}", other),
+        }
+
+        // The entry must also appear in get_tree with the correct type.
+        let tree = manager.get_tree().await.expect("get_tree");
+        let node = tree
+            .iter()
+            .find(|n| n.entry_id == summary_id)
+            .expect("branch summary node must appear in tree");
+        assert_eq!(node.entry_type, "branch_summary");
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `collect_messages_up_to` errors when the target entry does not exist.
+    #[tokio::test]
+    async fn collect_messages_up_to_errors_on_missing_entry() {
+        let dir = temp_dir("collect-missing");
+        let mut manager = SessionManager::new(dir.clone());
+        manager
+            .create_session("/tmp/work")
+            .await
+            .expect("session created");
+        manager
+            .append_message(AgentMessage::from_llm(Message::user("hello")))
+            .await
+            .expect("append");
+
+        let err = manager
+            .collect_messages_up_to("nonexistent-id")
+            .await
+            .expect_err("should fail for missing id");
+        assert!(err.to_string().contains("not found in session"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `collect_messages_up_to` errors when no session is active.
+    #[tokio::test]
+    async fn collect_messages_up_to_errors_without_active_session() {
+        let dir = temp_dir("collect-no-session");
+        let manager = SessionManager::new(dir.clone());
+
+        let err = manager
+            .collect_messages_up_to("some-id")
+            .await
+            .expect_err("should fail without active session");
         assert!(err.to_string().contains("No active session"));
 
         fs::remove_dir_all(dir).ok();

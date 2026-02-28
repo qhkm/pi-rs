@@ -8,6 +8,7 @@
 //! - **Providers** (`providers`) — Anthropic, OpenAI-compatible, and Google
 //! - **Auth** (`auth`) — API key resolution from environment variables
 //! - **Error types** (`error`) — unified error enum
+//! - **Utils** (`utils`) — shared helpers (partial JSON parser, etc.)
 
 pub mod auth;
 pub mod error;
@@ -16,6 +17,7 @@ pub mod models;
 pub mod providers;
 pub mod streaming;
 pub mod tools;
+pub mod utils;
 
 // ─── Top-level re-exports ─────────────────────────────────────────────────────
 
@@ -57,3 +59,8 @@ pub use providers::{AnthropicProvider, GoogleProvider, OpenAICompat, OpenAIProvi
 
 // Auth
 pub use auth::api_key::{get_api_key, is_valid_api_key, require_api_key};
+
+// Utils
+pub use utils::parse_partial_json;
+pub use utils::build_http_client;
+pub use utils::proxy::configure_proxy;

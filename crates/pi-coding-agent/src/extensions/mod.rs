@@ -1,2 +1,521 @@
+pub mod hooks;
 pub mod types;
+
+pub use hooks::HookRegistry;
 pub use types::{Extension, ExtensionManifest};
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use pi_agent_core::{AgentTool, ToolContext, ToolResult};
+use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
+use tracing::warn;
+
+use self::types::{ExecutorType, ExtensionToolDef};
+
+const MANIFEST_FILE_NAME: &str = "extension.json";
+
+pub fn discover_extensions(cwd: &Path) -> Result<Vec<Extension>> {
+    let mut roots = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(
+            PathBuf::from(home)
+                .join(".pi")
+                .join("agent")
+                .join("extensions"),
+        );
+    }
+    roots.push(cwd.join(".pi").join("extensions"));
+
+    let mut out = Vec::new();
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        let dirs = std::fs::read_dir(&root)
+            .with_context(|| format!("failed reading extension dir '{}'", root.display()))?;
+        for entry in dirs {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let manifest_path = path.join(MANIFEST_FILE_NAME);
+            if !manifest_path.exists() {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&manifest_path).with_context(|| {
+                format!(
+                    "failed to read extension manifest '{}'",
+                    manifest_path.display()
+                )
+            })?;
+            let manifest: ExtensionManifest = serde_json::from_str(&raw).with_context(|| {
+                format!(
+                    "failed to parse extension manifest '{}'",
+                    manifest_path.display()
+                )
+            })?;
+            out.push(Extension { manifest, path });
+        }
+    }
+    Ok(out)
+}
+
+pub async fn register_extension_tools(
+    agent: &pi_agent_core::Agent,
+    extensions: &[Extension],
+) -> usize {
+    let mut count = 0usize;
+    for extension in extensions {
+        for tool in &extension.manifest.tools {
+            if let Some(runtime_tool) = RuntimeExtensionTool::new(extension, tool) {
+                agent.register_tool(Arc::new(runtime_tool)).await;
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeExtensionTool {
+    tool_name: String,
+    description: String,
+    parameters: Value,
+    declared_tool_name: String,
+    executor: RuntimeExecutor,
+}
+
+#[derive(Debug, Clone)]
+enum RuntimeExecutor {
+    Shell { command: String },
+    Binary { path: String },
+}
+
+impl RuntimeExtensionTool {
+    fn new(extension: &Extension, tool: &ExtensionToolDef) -> Option<Self> {
+        let executor = match &tool.executor {
+            ExecutorType::Shell => {
+                let command = match tool.command.clone() {
+                    Some(c) if !c.trim().is_empty() => c,
+                    _ => {
+                        warn!(
+                            extension = %extension.manifest.name,
+                            tool = %tool.name,
+                            "Skipping shell extension tool without command"
+                        );
+                        return None;
+                    }
+                };
+                RuntimeExecutor::Shell { command }
+            }
+            ExecutorType::Binary => {
+                let path = match tool.binary.clone() {
+                    Some(p) if !p.trim().is_empty() => p,
+                    _ => {
+                        warn!(
+                            extension = %extension.manifest.name,
+                            tool = %tool.name,
+                            "Skipping binary extension tool without binary path"
+                        );
+                        return None;
+                    }
+                };
+                RuntimeExecutor::Binary { path }
+            }
+            ExecutorType::Wasm => {
+                warn!(
+                    extension = %extension.manifest.name,
+                    tool = %tool.name,
+                    executor = ?tool.executor,
+                    "Skipping unsupported extension tool executor"
+                );
+                return None;
+            }
+        };
+
+        let tool_name = format!(
+            "ext_{}_{}",
+            slugify(&extension.manifest.name),
+            slugify(&tool.name)
+        );
+
+        let description = if tool.description.trim().is_empty() {
+            format!(
+                "Extension tool '{}' from '{}'",
+                tool.name, extension.manifest.name
+            )
+        } else {
+            tool.description.clone()
+        };
+
+        let parameters = if tool.parameters.is_null() {
+            serde_json::json!({ "type": "object" })
+        } else {
+            tool.parameters.clone()
+        };
+
+        Some(Self {
+            tool_name,
+            description,
+            parameters,
+            declared_tool_name: tool.name.clone(),
+            executor,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentTool for RuntimeExtensionTool {
+    fn name(&self) -> &str {
+        &self.tool_name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> Value {
+        self.parameters.clone()
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> pi_agent_core::Result<ToolResult> {
+        let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
+        match &self.executor {
+            RuntimeExecutor::Shell { command } => {
+                let child = Command::new("bash")
+                    .arg("-c")
+                    .arg(command)
+                    .current_dir(&ctx.cwd)
+                    .env("PI_EXTENSION_ARGS", args.to_string())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .map_err(|e| pi_agent_core::AgentError::ToolExecution {
+                        tool_name: self.tool_name.clone(),
+                        message: format!("Failed to spawn process: {e}"),
+                    })?;
+
+                execute_child(
+                    child,
+                    timeout_secs,
+                    &ctx.abort,
+                    &self.tool_name,
+                    OutputMode::Plain,
+                )
+                .await
+            }
+            RuntimeExecutor::Binary { path } => {
+                let mut child = Command::new(path)
+                    .current_dir(&ctx.cwd)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .map_err(|e| pi_agent_core::AgentError::ToolExecution {
+                        tool_name: self.tool_name.clone(),
+                        message: format!("Failed to spawn process: {e}"),
+                    })?;
+
+                if let Some(mut stdin) = child.stdin.take() {
+                    let request = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": "1",
+                        "method": "tool.execute",
+                        "params": {
+                            "tool": self.declared_tool_name.clone(),
+                            "args": args,
+                            "cwd": ctx.cwd.clone(),
+                        }
+                    });
+                    stdin
+                        .write_all(request.to_string().as_bytes())
+                        .await
+                        .map_err(|e| pi_agent_core::AgentError::ToolExecution {
+                            tool_name: self.tool_name.clone(),
+                            message: format!("Failed to write to binary stdin: {e}"),
+                        })?;
+                    stdin.write_all(b"\n").await.map_err(|e| {
+                        pi_agent_core::AgentError::ToolExecution {
+                            tool_name: self.tool_name.clone(),
+                            message: format!("Failed to write newline to binary stdin: {e}"),
+                        }
+                    })?;
+                }
+
+                execute_child(
+                    child,
+                    timeout_secs,
+                    &ctx.abort,
+                    &self.tool_name,
+                    OutputMode::BinaryJsonRpc,
+                )
+                .await
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OutputMode {
+    Plain,
+    BinaryJsonRpc,
+}
+
+async fn execute_child(
+    mut child: Child,
+    timeout_secs: u64,
+    abort: &tokio::sync::watch::Receiver<bool>,
+    tool_name: &str,
+    mode: OutputMode,
+) -> pi_agent_core::Result<ToolResult> {
+    let mut stdout_handle = child.stdout.take();
+    let mut stderr_handle = child.stderr.take();
+    let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+    let mut abort_rx = abort.clone();
+
+    let status = tokio::select! {
+        result = tokio::time::timeout(timeout_dur, child.wait()) => {
+            match result {
+                Ok(Ok(status)) => status,
+                Ok(Err(e)) => return Ok(ToolResult::error(format!("Failed to wait for process: {e}"))),
+                Err(_) => {
+                    let _ = child.kill().await;
+                    return Ok(ToolResult::error(format!("Command timed out after {timeout_secs}s")));
+                }
+            }
+        }
+        result = abort_rx.changed() => {
+            let _ = result;
+            if *abort_rx.borrow() {
+                let _ = child.kill().await;
+                return Ok(ToolResult::error("Command aborted"));
+            }
+            child.wait().await.map_err(|e| pi_agent_core::AgentError::ToolExecution {
+                tool_name: tool_name.to_string(),
+                message: format!("Failed to wait for process: {e}"),
+            })?
+        }
+    };
+
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    if let Some(ref mut h) = stdout_handle {
+        let _ = h.read_to_end(&mut stdout_bytes).await;
+    }
+    if let Some(ref mut h) = stderr_handle {
+        let _ = h.read_to_end(&mut stderr_bytes).await;
+    }
+
+    let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+
+    if !status.success() {
+        let mut out = if stdout.trim().is_empty() {
+            String::new()
+        } else {
+            stdout
+        };
+        if !stderr.trim().is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("STDERR:\n");
+            out.push_str(&stderr);
+        }
+        if out.is_empty() {
+            out = "(no output)".to_string();
+        }
+        out.push_str(&format!("\nExit code: {}", status.code().unwrap_or(-1)));
+        return Ok(ToolResult::error(out));
+    }
+
+    let result = match mode {
+        OutputMode::Plain => build_plain_result(&stdout, &stderr),
+        OutputMode::BinaryJsonRpc => build_binary_jsonrpc_result(&stdout, &stderr),
+    };
+    Ok(result)
+}
+
+fn build_plain_result(stdout: &str, stderr: &str) -> ToolResult {
+    let mut result = String::new();
+    if !stdout.trim().is_empty() {
+        result.push_str(stdout);
+    }
+    if !stderr.trim().is_empty() {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str("STDERR:\n");
+        result.push_str(stderr);
+    }
+    if result.is_empty() {
+        result = "(no output)".to_string();
+    }
+    ToolResult::success(result)
+}
+
+fn build_binary_jsonrpc_result(stdout: &str, stderr: &str) -> ToolResult {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return build_plain_result(stdout, stderr);
+    }
+
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(err) = value.get("error") {
+            return ToolResult::error(format!("Binary tool error: {}", err));
+        }
+        if let Some(result) = value.get("result") {
+            if let Some(s) = result.as_str() {
+                return ToolResult::success(s.to_string());
+            }
+            return ToolResult::success(result.to_string());
+        }
+        if let Some(output) = value.get("output").and_then(Value::as_str) {
+            let success = value
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            if success {
+                return ToolResult::success(output.to_string());
+            }
+            return ToolResult::error(output.to_string());
+        }
+    }
+
+    build_plain_result(stdout, stderr)
+}
+
+fn slugify(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_underscore = false;
+
+    for ch in name.chars() {
+        let normalized = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+
+        if normalized == '_' {
+            if !prev_underscore && !out.is_empty() {
+                out.push('_');
+            }
+            prev_underscore = true;
+        } else {
+            out.push(normalized);
+            prev_underscore = false;
+        }
+    }
+
+    while out.ends_with('_') {
+        out.pop();
+    }
+
+    if out.is_empty() {
+        "extension".to_string()
+    } else {
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn discover_extensions_loads_manifests() {
+        let tmp = TempDir::new().expect("tempdir");
+        let project = tmp.path().join("project");
+        let ext_dir = project.join(".pi").join("extensions").join("my-ext");
+        std::fs::create_dir_all(&ext_dir).expect("mkdir");
+        std::fs::write(
+            ext_dir.join("extension.json"),
+            r#"{
+  "name": "my-ext",
+  "version": "0.1.0",
+  "description": "test extension",
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo tool",
+      "parameters": {"type":"object"},
+      "executor": "shell",
+      "command": "echo ok"
+    }
+  ],
+  "commands": []
+}"#,
+        )
+        .expect("write manifest");
+
+        let extensions = discover_extensions(&project).expect("discover");
+        assert_eq!(extensions.len(), 1);
+        assert_eq!(extensions[0].manifest.name, "my-ext");
+        assert_eq!(extensions[0].manifest.tools.len(), 1);
+    }
+
+    #[test]
+    fn runtime_tool_skips_wasm_executor() {
+        let extension = Extension {
+            manifest: ExtensionManifest {
+                name: "ext".to_string(),
+                version: "0.1.0".to_string(),
+                description: String::new(),
+                tools: vec![],
+                commands: vec![],
+            },
+            path: PathBuf::from("/tmp/ext"),
+        };
+        let wasm_tool = ExtensionToolDef {
+            name: "w".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({"type":"object"}),
+            executor: ExecutorType::Wasm,
+            command: Some("echo".to_string()),
+            binary: None,
+        };
+        assert!(RuntimeExtensionTool::new(&extension, &wasm_tool).is_none());
+    }
+
+    #[test]
+    fn runtime_tool_accepts_binary_executor() {
+        let extension = Extension {
+            manifest: ExtensionManifest {
+                name: "ext".to_string(),
+                version: "0.1.0".to_string(),
+                description: String::new(),
+                tools: vec![],
+                commands: vec![],
+            },
+            path: PathBuf::from("/tmp/ext"),
+        };
+        let binary_tool = ExtensionToolDef {
+            name: "b".to_string(),
+            description: String::new(),
+            parameters: serde_json::json!({"type":"object"}),
+            executor: ExecutorType::Binary,
+            command: None,
+            binary: Some("/usr/bin/true".to_string()),
+        };
+        assert!(RuntimeExtensionTool::new(&extension, &binary_tool).is_some());
+    }
+
+    #[test]
+    fn binary_jsonrpc_result_parses_result() {
+        let result =
+            build_binary_jsonrpc_result(r#"{"jsonrpc":"2.0","id":"1","result":{"ok":true}}"#, "");
+        assert!(!result.is_error);
+        assert_eq!(result.content, r#"{"ok":true}"#);
+    }
+}

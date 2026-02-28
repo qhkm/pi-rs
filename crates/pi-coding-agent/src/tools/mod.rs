@@ -5,6 +5,7 @@ pub mod grep;
 pub mod ls;
 pub mod operations;
 pub mod read;
+pub mod truncate;
 pub mod write;
 
 pub use operations::{resolve_and_validate_path, FileOperations};

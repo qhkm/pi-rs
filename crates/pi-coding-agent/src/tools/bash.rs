@@ -1,3 +1,4 @@
+use super::truncate::{smart_truncate, TruncationConfig};
 use async_trait::async_trait;
 use pi_agent_core::{AgentTool, ToolContext, ToolResult};
 use serde_json::Value;
@@ -125,11 +126,12 @@ impl AgentTool for BashTool {
             result = "(no output)".to_string();
         }
 
+        let cfg = TruncationConfig::default();
         if status.success() {
-            Ok(ToolResult::success(result))
+            Ok(ToolResult::success(smart_truncate(&result, &cfg)))
         } else {
             result.push_str(&format!("\nExit code: {}", status.code().unwrap_or(-1)));
-            Ok(ToolResult::error(result))
+            Ok(ToolResult::error(smart_truncate(&result, &cfg)))
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -22,6 +22,16 @@ use crate::error::{AgentError, Result};
 use crate::messages::{self, AgentMessage};
 use crate::tools::traits::{ToolContext, ToolResult as AgentToolResult};
 
+/// A callable that receives the full LLM-visible message list (already
+/// converted from `AgentMessage`) right before it is sent to the provider and
+/// may mutate it in place.  The list is a *clone* of the stored conversation;
+/// mutations here never affect the persisted history.
+///
+/// # Thread-safety
+/// Transforms are stored behind an `Arc<RwLock<…>>` so they can be registered
+/// from any thread.  The closure itself must be `Send + Sync`.
+pub type ContextTransformFn = Box<dyn Fn(&mut Vec<Message>) + Send + Sync>;
+
 /// The Agent drives the core loop of: prompt → stream → tool execution → repeat.
 pub struct Agent {
     pub config: AgentConfig,
@@ -31,6 +41,9 @@ pub struct Agent {
     current_model: tokio::sync::RwLock<Model>,
     model_cycle: tokio::sync::Mutex<Option<ModelCycleState>>,
     event_tx: broadcast::Sender<AgentEvent>,
+    /// Ordered list of context transforms applied to a *clone* of the messages
+    /// immediately before each LLM call.  Transforms run in registration order.
+    context_transforms: Arc<RwLock<Vec<ContextTransformFn>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,14 +57,55 @@ impl Agent {
     pub fn new(config: AgentConfig) -> Self {
         let (event_tx, _) = broadcast::channel(4096);
         let current_model = config.model.clone();
+        let compaction_enabled = config.compaction.enabled;
         Self {
             config,
-            shared: Arc::new(AgentSharedState::new()),
+            shared: Arc::new(AgentSharedState::new_with_compaction(compaction_enabled)),
             messages: tokio::sync::RwLock::new(Vec::new()),
             current_model: tokio::sync::RwLock::new(current_model),
             model_cycle: tokio::sync::Mutex::new(None),
             event_tx,
+            context_transforms: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Enable or disable auto-compaction at runtime.
+    ///
+    /// This updates the shared atomic flag that the agent loop checks after each
+    /// LLM turn. The change takes effect on the next turn — it does not interrupt
+    /// a compaction that is already in progress.
+    pub fn set_auto_compaction(&self, enabled: bool) {
+        use std::sync::atomic::Ordering;
+        self.shared
+            .auto_compaction_enabled
+            .store(enabled, Ordering::SeqCst);
+    }
+
+    /// Returns whether auto-compaction is currently enabled.
+    pub fn auto_compaction_enabled(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.shared
+            .auto_compaction_enabled
+            .load(Ordering::SeqCst)
+    }
+
+    /// Register a context transform that will be applied to the LLM-visible
+    /// message list right before every provider call.
+    ///
+    /// Transforms are applied in registration order.  The closure receives a
+    /// mutable reference to the *already-converted* `Vec<Message>` (i.e. the
+    /// output of [`messages::to_llm_messages`]) and may add, remove, or rewrite
+    /// any messages it likes.  The stored conversation is never mutated.
+    ///
+    /// # Example
+    /// ```ignore
+    /// agent.register_context_transform(Box::new(|msgs| {
+    ///     // Prepend an invisible reminder before every LLM call.
+    ///     msgs.insert(0, Message::user("Always respond in English."));
+    /// }));
+    /// ```
+    pub async fn register_context_transform(&self, transform: ContextTransformFn) {
+        self.context_transforms.write().await.push(transform);
     }
 
     /// Subscribe to agent events
@@ -113,6 +167,69 @@ impl Agent {
         } else {
             None
         };
+    }
+
+    /// Return the ID of the currently active model.
+    ///
+    /// When a model cycle has been configured, this reflects the model that will
+    /// be used for the *next* LLM call.  Before any prompt has been issued (and
+    /// before the cycle has started), it is always the model supplied at
+    /// construction time (i.e. `models[0]`).
+    pub async fn current_model_name(&self) -> String {
+        self.current_model.read().await.id.clone()
+    }
+
+    /// Immediately advance the model cycle one step forward and return the
+    /// new active model's ID.
+    ///
+    /// If no cycle has been configured (single-model mode) this is a no-op
+    /// and returns `None`.
+    ///
+    /// The returned ID is the same value that [`current_model_name`] would
+    /// return after this call.
+    pub async fn cycle_model_next(&self) -> Option<String> {
+        let mut cycle_guard = self.model_cycle.lock().await;
+        let cycle = cycle_guard.as_mut()?;
+
+        // Advance: current becomes models[next_index], next_index moves forward.
+        let new_current = cycle.models[cycle.next_index].clone();
+        cycle.next_index = (cycle.next_index + 1) % cycle.models.len();
+        cycle.started = true;
+
+        // Commit the new current model.
+        *self.current_model.write().await = new_current.clone();
+
+        Some(new_current.id)
+    }
+
+    /// Immediately step the model cycle one position backward and return the
+    /// new active model's ID.
+    ///
+    /// If no cycle has been configured (single-model mode) this is a no-op
+    /// and returns `None`.
+    ///
+    /// Wraps around: calling `cycle_model_prev` on the first model in the list
+    /// moves to the last model.
+    pub async fn cycle_model_prev(&self) -> Option<String> {
+        let mut cycle_guard = self.model_cycle.lock().await;
+        let cycle = cycle_guard.as_mut()?;
+
+        let len = cycle.models.len();
+
+        // The current model sits at index (next_index - 1 + len) % len once
+        // the cycle has started.  Going backward means selecting the model
+        // one slot before the current one, which is (next_index - 2 + len) % len.
+        // We also need next_index to point one past the new current, so it
+        // becomes (next_index - 1 + len) % len.
+        cycle.next_index = (cycle.next_index + len - 1) % len;
+        let prev_index = (cycle.next_index + len - 1) % len;
+        let new_current = cycle.models[prev_index].clone();
+        cycle.started = true;
+
+        // Commit the new current model.
+        *self.current_model.write().await = new_current.clone();
+
+        Some(new_current.id)
     }
 
     /// Run the agent with a user prompt. This is the main entry point.
@@ -257,8 +374,10 @@ impl Agent {
 
                 last_message = Some(assistant_msg.clone());
 
-                // Auto-compaction check
-                if self.config.compaction.enabled {
+                // Auto-compaction check — read the runtime-mutable flag from shared state
+                // rather than the static AgentConfig so that SetAutoCompaction RPC commands
+                // take effect without rebuilding the agent.
+                if self.shared.auto_compaction_enabled.load(std::sync::atomic::Ordering::Relaxed) {
                     let usage = self.context_usage().await;
                     let context_window = self.config.token_budget.context_window;
                     if should_compact(usage.total_tokens, context_window, &self.config.compaction) {
@@ -323,10 +442,27 @@ impl Agent {
         last_message.ok_or_else(|| AgentError::Other(anyhow::anyhow!("No response generated")))
     }
 
-    /// Build the LLM context from current state
+    /// Build the LLM context from current state.
+    ///
+    /// Produces a *clone* of the stored messages, converts them to the
+    /// `Vec<Message>` format expected by providers, and then runs every
+    /// registered [`ContextTransformFn`] over that clone in order.  The
+    /// stored conversation is never modified.
     async fn build_context(&self) -> Context {
         let messages = self.messages.read().await;
-        let llm_messages = messages::to_llm_messages(&messages);
+        let mut llm_messages = messages::to_llm_messages(&messages);
+        // Drop the read guard before acquiring the transforms lock to avoid
+        // any potential ordering issues with other async tasks.
+        drop(messages);
+
+        // Apply registered context transforms to the cloned message list.
+        {
+            let transforms = self.context_transforms.read().await;
+            for transform in transforms.iter() {
+                transform(&mut llm_messages);
+            }
+        }
+
         let tools_guard = self.shared.tools.read().await;
         let tool_defs = tools_guard.active_tool_definitions();
 
@@ -337,6 +473,22 @@ impl Agent {
         ctx
     }
 
+    /// Resolve the per-request API key from config.
+    ///
+    /// Priority (highest first):
+    /// 1. `api_key_resolver` — invoked on every call; wins when it returns `Some`.
+    /// 2. `api_key_override` — static key set at agent construction time.
+    /// 3. `None` — the provider falls back to its own default (env var lookup).
+    fn resolve_api_key(&self) -> Option<String> {
+        if let Some(ref resolver) = self.config.api_key_resolver {
+            let resolved = resolver();
+            if resolved.is_some() {
+                return resolved;
+            }
+        }
+        self.config.api_key_override.clone()
+    }
+
     /// Stream a response from the LLM provider
     async fn stream_response(
         &self,
@@ -344,8 +496,18 @@ impl Agent {
         message_id: &str,
     ) -> Result<AssistantMessage> {
         let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
+
+        // Resolve the per-request thinking budget from the config's budget table.
+        // `resolved_thinking_budget()` returns None when no thinking level is set,
+        // or Some(n) where n=0 means "provider maximum / no cap".
+        let thinking_budget = self.config.resolved_thinking_budget();
+
         let options = SimpleStreamOptions {
-            base: pi_ai::StreamOptions::default(),
+            base: pi_ai::StreamOptions {
+                api_key: self.resolve_api_key(),
+                thinking_budget,
+                ..Default::default()
+            },
             reasoning: self.config.thinking_level,
             thinking_budgets: None,
         };
@@ -598,7 +760,10 @@ impl Agent {
 
     /// Run context compaction: summarize older messages via an LLM call and
     /// replace them with a single `CompactionSummary` message.
-    async fn run_compaction(&self) -> Result<CompactionResult> {
+    ///
+    /// This is safe to call externally (e.g. from an RPC handler) while the agent
+    /// is idle. The caller is responsible for ensuring no concurrent prompt is running.
+    pub async fn run_compaction(&self) -> Result<CompactionResult> {
         let previous_state = *self.shared.state.read().await;
         *self.shared.state.write().await = AgentState::Compacting;
 
@@ -659,6 +824,9 @@ impl Agent {
             Context::new(vec![Message::user(&user_prompt)]).with_system(system_prompt);
         let options = StreamOptions {
             max_tokens: Some(8192),
+            // Forward the per-request API key override so compaction calls
+            // use the same credentials as normal streaming calls.
+            api_key: self.resolve_api_key(),
             ..Default::default()
         };
 
@@ -774,5 +942,496 @@ impl Agent {
             message_count: msgs.len(),
             usage_percent,
         }
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+
+    // pi_ai re-exports everything from its crate root.
+    use pi_ai::{Api, InputType, LLMProvider, ModelCost, Provider, ProviderCapabilities};
+
+    use crate::agent::state::AgentConfig;
+    use crate::context::budget::TokenBudget;
+    use crate::context::compaction::CompactionSettings;
+
+    // ── Stub provider — never actually called in these tests ──────────────────
+
+    struct StubProvider;
+
+    #[async_trait]
+    impl LLMProvider for StubProvider {
+        fn name(&self) -> &str {
+            "stub"
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        async fn stream(
+            &self,
+            _model: &Model,
+            _context: &Context,
+            _options: &StreamOptions,
+            _tx: mpsc::Sender<StreamEvent>,
+        ) -> pi_ai::error::Result<()> {
+            unimplemented!("StubProvider::stream should not be called in unit tests")
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    fn stub_model() -> Model {
+        Model {
+            id: "stub-model".to_string(),
+            name: "Stub Model".to_string(),
+            api: Api::AnthropicMessages,
+            provider: Provider::Anthropic,
+            base_url: "https://example.com".to_string(),
+            reasoning: false,
+            input_types: vec![InputType::Text],
+            cost: ModelCost::default(),
+            context_window: 200_000,
+            max_tokens: 4096,
+            headers: None,
+        }
+    }
+
+    fn make_agent() -> Agent {
+        let config = AgentConfig {
+            provider: Arc::new(StubProvider),
+            model: stub_model(),
+            system_prompt: None,
+            max_turns: 0,
+            token_budget: TokenBudget::new(200_000),
+            compaction: CompactionSettings::default(),
+            thinking_level: None,
+            thinking_budgets: None,
+            cwd: "/tmp".to_string(),
+            api_key_override: None,
+            api_key_resolver: None,
+        };
+        Agent::new(config)
+    }
+
+    // ── Test 1: transform is called and can append a message ─────────────────
+
+    /// Verifies that a registered transform is actually invoked during
+    /// `build_context` and that the injected message is visible in the
+    /// returned `Context`.
+    #[tokio::test]
+    async fn transform_appends_message_to_context() {
+        let agent = make_agent();
+
+        // Seed the conversation with one user message.
+        agent
+            .messages
+            .write()
+            .await
+            .push(AgentMessage::from_llm(Message::user("Hello")));
+
+        // Register a transform that appends a sentinel message.
+        agent
+            .register_context_transform(Box::new(|msgs| {
+                msgs.push(Message::user("__sentinel__"));
+            }))
+            .await;
+
+        let ctx = agent.build_context().await;
+
+        // The context should contain both the original message and the sentinel.
+        assert_eq!(ctx.messages.len(), 2, "expected 2 messages after transform");
+        assert_eq!(
+            ctx.messages[1].text_content(),
+            "__sentinel__",
+            "transform did not append the expected sentinel message"
+        );
+    }
+
+    // ── Test 2: stored conversation is unmodified after transform ─────────────
+
+    /// Verifies that the transform operates on a *clone* and never mutates the
+    /// agent's internal message store.
+    #[tokio::test]
+    async fn transform_does_not_modify_stored_messages() {
+        let agent = make_agent();
+
+        agent
+            .messages
+            .write()
+            .await
+            .push(AgentMessage::from_llm(Message::user("Original")));
+
+        // A transform that replaces every message with something different.
+        agent
+            .register_context_transform(Box::new(|msgs| {
+                msgs.clear();
+                msgs.push(Message::user("Replaced"));
+            }))
+            .await;
+
+        // Calling build_context applies the transform to a clone.
+        let ctx = agent.build_context().await;
+        assert_eq!(ctx.messages.len(), 1);
+        assert_eq!(ctx.messages[0].text_content(), "Replaced");
+
+        // The internal store must still hold the original, untouched message.
+        let stored = agent.messages().await;
+        assert_eq!(stored.len(), 1, "stored message count should be unchanged");
+        assert_eq!(
+            stored[0]
+                .as_llm()
+                .expect("expected Llm variant")
+                .text_content(),
+            "Original",
+            "stored message content should be unchanged after transform"
+        );
+    }
+
+    // ── Test 3: multiple transforms run in registration order ─────────────────
+
+    /// Verifies that when several transforms are registered they all fire, and
+    /// do so in the order they were registered (each seeing the output of the
+    /// previous transform).
+    #[tokio::test]
+    async fn multiple_transforms_run_in_order() {
+        let agent = make_agent();
+
+        // Track invocation order via a shared mutex-guarded vec.
+        let call_order: Arc<std::sync::Mutex<Vec<u32>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let order_a = Arc::clone(&call_order);
+        agent
+            .register_context_transform(Box::new(move |msgs| {
+                order_a.lock().unwrap().push(1);
+                msgs.push(Message::user("__transform_1__"));
+            }))
+            .await;
+
+        let order_b = Arc::clone(&call_order);
+        agent
+            .register_context_transform(Box::new(move |msgs| {
+                order_b.lock().unwrap().push(2);
+                // Assert that transform 1 already ran by inspecting the tail.
+                let last = msgs.last().map(|m| m.text_content()).unwrap_or_default();
+                assert_eq!(
+                    last, "__transform_1__",
+                    "transform 2 should see transform 1's appended message"
+                );
+                msgs.push(Message::user("__transform_2__"));
+            }))
+            .await;
+
+        let order_c = Arc::clone(&call_order);
+        agent
+            .register_context_transform(Box::new(move |msgs| {
+                order_c.lock().unwrap().push(3);
+                msgs.push(Message::user("__transform_3__"));
+            }))
+            .await;
+
+        let ctx = agent.build_context().await;
+
+        let order = call_order.lock().unwrap().clone();
+        assert_eq!(order, vec![1, 2, 3], "transforms must fire in registration order");
+
+        let n = ctx.messages.len();
+        assert!(n >= 3, "expected at least 3 messages");
+        assert_eq!(ctx.messages[n - 3].text_content(), "__transform_1__");
+        assert_eq!(ctx.messages[n - 2].text_content(), "__transform_2__");
+        assert_eq!(ctx.messages[n - 1].text_content(), "__transform_3__");
+    }
+
+    // ── Test 4: transform call count via atomic counter ───────────────────────
+
+    /// Verifies the exact number of times a transform is invoked across
+    /// multiple `build_context` calls (once per call).
+    #[tokio::test]
+    async fn transform_is_called_once_per_build_context_invocation() {
+        let agent = make_agent();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&call_count);
+
+        agent
+            .register_context_transform(Box::new(move |_msgs| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }))
+            .await;
+
+        agent.build_context().await;
+        agent.build_context().await;
+        agent.build_context().await;
+
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            3,
+            "transform should be called exactly once per build_context invocation"
+        );
+    }
+
+    // ── API key override tests ─────────────────────────────────────────────────
+
+    /// A provider that records the `api_key` received in `StreamOptions` and
+    /// immediately sends a terminal `Done` event so the agent loop can finish.
+    struct KeyCapturingProvider {
+        captured_key: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl LLMProvider for KeyCapturingProvider {
+        fn name(&self) -> &str {
+            "key-capturing"
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
+
+        async fn stream(
+            &self,
+            model: &Model,
+            _context: &Context,
+            options: &StreamOptions,
+            tx: mpsc::Sender<StreamEvent>,
+        ) -> pi_ai::error::Result<()> {
+            // Record whichever api_key the agent injected.
+            *self.captured_key.lock().unwrap() = options.api_key.clone();
+
+            // Emit a minimal Done event so stream_response can return.
+            use pi_ai::messages::types::{AssistantMessage, StopReason, Usage};
+            let msg = AssistantMessage {
+                content: vec![],
+                api: model.api.clone(),
+                provider: model.provider.clone(),
+                model: model.id.clone(),
+                usage: Usage::default(),
+                stop_reason: StopReason::Stop,
+                error_message: None,
+                timestamp: 0,
+            };
+            let _ = tx
+                .send(StreamEvent::Done {
+                    reason: StopReason::Stop,
+                    message: msg,
+                })
+                .await;
+            Ok(())
+        }
+    }
+
+    fn make_capturing_agent(
+        captured_key: Arc<std::sync::Mutex<Option<String>>>,
+        api_key_override: Option<String>,
+        api_key_resolver: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
+    ) -> Agent {
+        let provider = Arc::new(KeyCapturingProvider { captured_key });
+        let config = AgentConfig {
+            provider,
+            model: stub_model(),
+            system_prompt: None,
+            max_turns: 1,
+            token_budget: TokenBudget::new(200_000),
+            compaction: CompactionSettings::default(),
+            thinking_level: None,
+            thinking_budgets: None,
+            cwd: "/tmp".to_string(),
+            api_key_override,
+            api_key_resolver,
+        };
+        Agent::new(config)
+    }
+
+    // ── Test 5: static api_key_override is forwarded to the provider ──────────
+
+    /// Verifies that when `api_key_override` is set on `AgentConfig`, the value
+    /// is propagated all the way to `StreamOptions::api_key` inside the provider.
+    #[tokio::test]
+    async fn api_key_override_forwarded_to_provider() {
+        let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+
+        let agent = make_capturing_agent(
+            captured.clone(),
+            Some("sk-static-override".to_string()),
+            None,
+        );
+
+        let _ = agent.prompt("hello").await;
+
+        let key = captured.lock().unwrap().clone();
+        assert_eq!(
+            key.as_deref(),
+            Some("sk-static-override"),
+            "Provider should receive the static api_key_override value"
+        );
+    }
+
+    // ── Test 6: dynamic resolver wins over static override ────────────────────
+
+    /// Verifies that when both `api_key_resolver` and `api_key_override` are set,
+    /// the resolver's return value takes priority because it is evaluated first
+    /// in `resolve_api_key()`.
+    #[tokio::test]
+    async fn dynamic_resolver_wins_over_static_override() {
+        let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+
+        let resolver: Box<dyn Fn() -> Option<String> + Send + Sync> =
+            Box::new(|| Some("sk-dynamic-from-resolver".to_string()));
+
+        let agent = make_capturing_agent(
+            captured.clone(),
+            Some("sk-static-should-not-be-used".to_string()),
+            Some(resolver),
+        );
+
+        let _ = agent.prompt("hello").await;
+
+        let key = captured.lock().unwrap().clone();
+        assert_eq!(
+            key.as_deref(),
+            Some("sk-dynamic-from-resolver"),
+            "Dynamic resolver should take priority over static api_key_override"
+        );
+    }
+
+    // ── Model cycling tests ───────────────────────────────────────────────────
+
+    /// Build a stub model with a custom id so we can distinguish models in tests.
+    fn named_model(id: &str) -> Model {
+        Model {
+            id: id.to_string(),
+            name: id.to_string(),
+            ..stub_model()
+        }
+    }
+
+    /// Build a three-element cycle [alpha, beta, gamma] on a fresh agent and
+    /// return the agent plus the three models.
+    async fn make_cycling_agent() -> (Agent, Vec<Model>) {
+        let agent = make_agent();
+        let models = vec![
+            named_model("alpha"),
+            named_model("beta"),
+            named_model("gamma"),
+        ];
+        agent.configure_model_cycle(models.clone()).await;
+        (agent, models)
+    }
+
+    // ── Test 7: cycle_model_next wraps around ─────────────────────────────────
+
+    /// Verifies that repeatedly calling `cycle_model_next` advances through the
+    /// full cycle and then wraps back to the beginning.
+    #[tokio::test]
+    async fn cycle_model_next_wraps_around() {
+        let (agent, _) = make_cycling_agent().await;
+
+        // Starting model is always models[0] after configure_model_cycle.
+        assert_eq!(agent.current_model_name().await, "alpha");
+
+        // Advance once → beta.
+        let next = agent.cycle_model_next().await;
+        assert_eq!(next.as_deref(), Some("beta"));
+        assert_eq!(agent.current_model_name().await, "beta");
+
+        // Advance again → gamma.
+        let next = agent.cycle_model_next().await;
+        assert_eq!(next.as_deref(), Some("gamma"));
+        assert_eq!(agent.current_model_name().await, "gamma");
+
+        // Advance past the end → wraps back to alpha.
+        let next = agent.cycle_model_next().await;
+        assert_eq!(next.as_deref(), Some("alpha"));
+        assert_eq!(agent.current_model_name().await, "alpha");
+
+        // One more full round-trip.
+        let next = agent.cycle_model_next().await;
+        assert_eq!(next.as_deref(), Some("beta"));
+    }
+
+    // ── Test 8: cycle_model_prev wraps around ─────────────────────────────────
+
+    /// Verifies that `cycle_model_prev` steps backward through the cycle and
+    /// wraps from the first model to the last.
+    #[tokio::test]
+    async fn cycle_model_prev_wraps_around() {
+        let (agent, _) = make_cycling_agent().await;
+
+        // Starting model is alpha (index 0).
+        assert_eq!(agent.current_model_name().await, "alpha");
+
+        // Going backward from index 0 should wrap to gamma (the last entry).
+        let prev = agent.cycle_model_prev().await;
+        assert_eq!(prev.as_deref(), Some("gamma"));
+        assert_eq!(agent.current_model_name().await, "gamma");
+
+        // One more backward step from gamma → beta.
+        let prev = agent.cycle_model_prev().await;
+        assert_eq!(prev.as_deref(), Some("beta"));
+        assert_eq!(agent.current_model_name().await, "beta");
+
+        // Back to alpha.
+        let prev = agent.cycle_model_prev().await;
+        assert_eq!(prev.as_deref(), Some("alpha"));
+        assert_eq!(agent.current_model_name().await, "alpha");
+    }
+
+    // ── Test 9: single-model, cycle ops are no-ops ────────────────────────────
+
+    /// Verifies that when `configure_model_cycle` is called with a single model
+    /// (or not called at all), `cycle_model_next` and `cycle_model_prev` both
+    /// return `None` and `current_model_name` continues to return the initial
+    /// model unchanged.
+    #[tokio::test]
+    async fn single_model_cycle_ops_are_no_ops() {
+        let agent = make_agent();
+
+        // No cycle configured — both ops should be no-ops.
+        assert_eq!(agent.current_model_name().await, "stub-model");
+
+        let next = agent.cycle_model_next().await;
+        assert!(
+            next.is_none(),
+            "cycle_model_next should return None when no cycle is configured"
+        );
+        assert_eq!(agent.current_model_name().await, "stub-model");
+
+        let prev = agent.cycle_model_prev().await;
+        assert!(
+            prev.is_none(),
+            "cycle_model_prev should return None when no cycle is configured"
+        );
+        assert_eq!(agent.current_model_name().await, "stub-model");
+
+        // Now configure with a single model — cycle state is still None for a
+        // one-element list (see configure_model_cycle implementation).
+        agent
+            .configure_model_cycle(vec![named_model("only-model")])
+            .await;
+
+        assert_eq!(agent.current_model_name().await, "only-model");
+
+        let next = agent.cycle_model_next().await;
+        assert!(
+            next.is_none(),
+            "cycle_model_next should return None for a single-model cycle"
+        );
+        assert_eq!(agent.current_model_name().await, "only-model");
+
+        let prev = agent.cycle_model_prev().await;
+        assert!(
+            prev.is_none(),
+            "cycle_model_prev should return None for a single-model cycle"
+        );
+        assert_eq!(agent.current_model_name().await, "only-model");
     }
 }

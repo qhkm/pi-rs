@@ -20,6 +20,7 @@ use crate::providers::traits::{
 use crate::streaming::events::StreamEvent;
 use crate::streaming::sse::sse_stream_from_response;
 use crate::tools::schema::ToolCall;
+use crate::utils::build_http_client;
 
 // ─── Compat flags ─────────────────────────────────────────────────────────────
 
@@ -87,10 +88,7 @@ pub struct OpenAIProvider {
 impl OpenAIProvider {
     pub fn new(api_key: impl Into<String>, base_url: Option<&str>, compat: OpenAICompat) -> Self {
         OpenAIProvider {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: build_http_client(300),
             api_key: api_key.into(),
             base_url: base_url.unwrap_or("https://api.openai.com").to_string(),
             compat,
@@ -771,5 +769,51 @@ impl OpenAIProvider {
         }
 
         Ok(())
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::types::{Content, Message, UserContent};
+    use chrono::Utc;
+
+    /// Verify that `Content::Image` inside a user message's `Blocks` content is
+    /// serialized to the OpenAI image_url format:
+    /// `{"type":"image_url","image_url":{"url":"data:<mime>;base64,<data>"}}`
+    #[test]
+    fn image_content_serialized_as_openai_image_url() {
+        let image = Content::Image {
+            data: "aGVsbG8=".to_string(),
+            mime_type: "image/jpeg".to_string(),
+        };
+        let msg = Message::User(crate::messages::types::UserMessage {
+            content: UserContent::Blocks(vec![
+                Content::text("What is in this picture?"),
+                image,
+            ]),
+            timestamp: Utc::now().timestamp_millis(),
+        });
+
+        let compat = OpenAICompat::default();
+        let messages_value = build_openai_messages(&[msg], &compat);
+        let content_parts = &messages_value[0]["content"];
+
+        // First part is the text.
+        assert_eq!(content_parts[0]["type"], "text");
+        assert_eq!(content_parts[0]["text"], "What is in this picture?");
+
+        // Second part must be the image_url block.
+        let img_part = &content_parts[1];
+        assert_eq!(
+            img_part["type"], "image_url",
+            "part type must be 'image_url'"
+        );
+        assert_eq!(
+            img_part["image_url"]["url"], "data:image/jpeg;base64,aGVsbG8=",
+            "image_url.url must be a data-URI with the correct mime type and base64 payload"
+        );
     }
 }

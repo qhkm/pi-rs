@@ -122,6 +122,7 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
                 ) {
                     Ok(value) => value,
                     Err(e) => {
+                        is_prompting.store(false, Ordering::SeqCst);
                         return print_response(RpcResponse::error(
                             id,
                             cmd_type,
@@ -175,7 +176,8 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
             let session_state = RpcSessionState {
                 is_streaming: matches!(state, AgentState::Streaming),
                 message_count: messages.len(),
-                auto_compaction_enabled: agent.config.compaction.enabled,
+                // Read the runtime-mutable flag so this reflects any SetAutoCompaction changes.
+                auto_compaction_enabled: agent.auto_compaction_enabled(),
             };
             match serde_json::to_value(&session_state) {
                 Ok(data) => RpcResponse::success(id, cmd_type, Some(data)),
@@ -195,15 +197,70 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
             custom_instructions,
             ..
         } => {
-            // TODO: Wire to compaction when full compaction plumbing is in place.
-            let _ = custom_instructions;
-            RpcResponse::error(id, cmd_type, "Compaction not yet wired in RPC mode")
+            // custom_instructions are reserved for future use (e.g. injecting extra
+            // guidance into the summarisation prompt). The underlying run_compaction
+            // call does not yet accept them, so we log and ignore for now.
+            if let Some(ref extra) = custom_instructions {
+                eprintln!("[rpc] compact: custom_instructions not yet forwarded: {extra}");
+            }
+
+            // Reject if a prompt is already running — compacting mid-stream is unsafe.
+            if is_prompting.load(Ordering::SeqCst) {
+                return print_response(RpcResponse::error(
+                    id,
+                    cmd_type,
+                    "Cannot compact while a prompt is in progress. Send 'abort' first.",
+                ));
+            }
+
+            match agent.run_compaction().await {
+                Ok(result) => {
+                    let payload = RpcCompactionResult {
+                        tokens_before: result.tokens_before,
+                        tokens_after: result.tokens_after,
+                        messages_compacted: result.messages_compacted,
+                    };
+                    match serde_json::to_value(&payload) {
+                        Ok(data) => RpcResponse::success(id, cmd_type, Some(data)),
+                        Err(e) => {
+                            RpcResponse::error(id, cmd_type, &format!("Serialization error: {e}"))
+                        }
+                    }
+                }
+                Err(e) => RpcResponse::error(id, cmd_type, &format!("Compaction failed: {e}")),
+            }
         }
 
         RpcCommand::SetAutoCompaction { enabled, .. } => {
-            // TODO: Wire to a mutable config toggle once AgentConfig supports it.
-            let _ = enabled;
-            RpcResponse::success(id, cmd_type, None)
+            agent.set_auto_compaction(*enabled);
+            let payload = serde_json::json!({ "auto_compaction_enabled": enabled });
+            RpcResponse::success(id, cmd_type, Some(payload))
+        }
+
+        RpcCommand::GetConfig { .. } => {
+            let model_id = agent.config.model.id.clone();
+            let model_name = agent.config.model.name.clone();
+            let thinking_level = agent
+                .config
+                .thinking_level
+                .map(|l| format!("{l:?}").to_lowercase());
+            let auto_compaction_enabled = agent.auto_compaction_enabled();
+            let compaction_reserve_tokens = agent.config.compaction.reserve_tokens;
+            let compaction_keep_recent_tokens = agent.config.compaction.keep_recent_tokens;
+
+            let config_snapshot = RpcAgentConfig {
+                model_id,
+                model_name,
+                thinking_level,
+                auto_compaction_enabled,
+                compaction_reserve_tokens,
+                compaction_keep_recent_tokens,
+            };
+
+            match serde_json::to_value(&config_snapshot) {
+                Ok(data) => RpcResponse::success(id, cmd_type, Some(data)),
+                Err(e) => RpcResponse::error(id, cmd_type, &format!("Serialization error: {e}")),
+            }
         }
     };
 

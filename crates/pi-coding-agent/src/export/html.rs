@@ -4,6 +4,8 @@ use anyhow::Result;
 use pi_agent_core::messages::AgentMessage;
 use pi_ai::{Content, Message, UserContent};
 
+use crate::export::ansi::ansi_to_html;
+
 /// Export a session's messages to a standalone HTML file.
 ///
 /// Returns the path to the generated HTML file.
@@ -96,11 +98,14 @@ fn render_html(messages: &[AgentMessage], title: &str) -> String {
                     } else {
                         content_text
                     };
+                    // ansi_to_html handles its own HTML escaping of literal text, so we
+                    // must not call escape_html on the result — that would double-escape.
+                    let rendered_content = ansi_to_html(&truncated);
                     body.push_str(&format!(
                         "<div class=\"message tool-result\"><div class=\"role\">Tool: {}</div>\
                          <pre class=\"content\">{}</pre></div>\n",
                         escape_html(&tool_result.tool_name),
-                        escape_html(&truncated)
+                        rendered_content
                     ));
                 }
             },

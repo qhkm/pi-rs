@@ -19,10 +19,18 @@ pub enum RpcCommand {
     #[serde(rename = "compact")]
     Compact {
         id: Option<String>,
+        /// Optional extra instructions to append to the compaction prompt.
         custom_instructions: Option<String>,
     },
     #[serde(rename = "set_auto_compaction")]
-    SetAutoCompaction { id: Option<String>, enabled: bool },
+    SetAutoCompaction {
+        id: Option<String>,
+        /// Whether to enable (`true`) or disable (`false`) auto-compaction.
+        enabled: bool,
+    },
+    /// Return the current agent configuration (model, thinking level, compaction settings).
+    #[serde(rename = "get_config")]
+    GetConfig { id: Option<String> },
 }
 
 impl RpcCommand {
@@ -35,6 +43,7 @@ impl RpcCommand {
             Self::GetMessages { id, .. } => id.as_deref(),
             Self::Compact { id, .. } => id.as_deref(),
             Self::SetAutoCompaction { id, .. } => id.as_deref(),
+            Self::GetConfig { id, .. } => id.as_deref(),
         }
     }
 
@@ -47,6 +56,7 @@ impl RpcCommand {
             Self::GetMessages { .. } => "get_messages",
             Self::Compact { .. } => "compact",
             Self::SetAutoCompaction { .. } => "set_auto_compaction",
+            Self::GetConfig { .. } => "get_config",
         }
     }
 }
@@ -102,6 +112,34 @@ pub struct RpcSessionState {
     pub is_streaming: bool,
     pub message_count: usize,
     pub auto_compaction_enabled: bool,
+}
+
+/// Compaction result returned by the `compact` command.
+#[derive(Debug, Serialize)]
+pub struct RpcCompactionResult {
+    /// Token count before compaction.
+    pub tokens_before: u64,
+    /// Token count after compaction.
+    pub tokens_after: u64,
+    /// Number of messages that were summarised and replaced.
+    pub messages_compacted: usize,
+}
+
+/// Agent configuration snapshot returned by `get_config`.
+#[derive(Debug, Serialize)]
+pub struct RpcAgentConfig {
+    /// Model id currently in use (e.g. `"claude-opus-4-5"`).
+    pub model_id: String,
+    /// Human-readable model name.
+    pub model_name: String,
+    /// Thinking/reasoning level, if configured (e.g. `"medium"`).
+    pub thinking_level: Option<String>,
+    /// Whether auto-compaction is currently enabled (runtime value).
+    pub auto_compaction_enabled: bool,
+    /// Token threshold below the context window that triggers auto-compaction.
+    pub compaction_reserve_tokens: u64,
+    /// Minimum number of recent tokens always preserved from compaction.
+    pub compaction_keep_recent_tokens: u64,
 }
 
 /// Event wrapper written to stdout (one JSON object per line).

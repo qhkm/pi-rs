@@ -19,6 +19,7 @@ use crate::providers::traits::{
 use crate::streaming::events::StreamEvent;
 use crate::streaming::sse::sse_stream_from_response;
 use crate::tools::schema::ToolCall;
+use crate::utils::build_http_client;
 
 // ─── Provider struct ──────────────────────────────────────────────────────────
 
@@ -31,10 +32,7 @@ pub struct GoogleProvider {
 impl GoogleProvider {
     pub fn new(api_key: impl Into<String>, base_url: Option<&str>) -> Self {
         GoogleProvider {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(300))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: build_http_client(300),
             api_key: api_key.into(),
             base_url: base_url
                 .unwrap_or("https://generativelanguage.googleapis.com")
@@ -556,5 +554,53 @@ impl LLMProvider for GoogleProvider {
         }
 
         Ok(())
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::types::{Content, Message, UserContent};
+    use chrono::Utc;
+
+    /// Verify that `Content::Image` inside a user message's `Blocks` content is
+    /// serialized to the Gemini inlineData format:
+    /// `{"inlineData":{"mimeType":"...","data":"..."}}`
+    #[test]
+    fn image_content_serialized_as_gemini_inline_data() {
+        let image = Content::Image {
+            data: "aGVsbG8=".to_string(),
+            mime_type: "image/webp".to_string(),
+        };
+        let msg = Message::User(crate::messages::types::UserMessage {
+            content: UserContent::Blocks(vec![
+                Content::text("Explain this diagram."),
+                image,
+            ]),
+            timestamp: Utc::now().timestamp_millis(),
+        });
+
+        let contents = build_gemini_contents(&[msg]);
+        let parts = &contents[0]["parts"];
+
+        // First part is the text.
+        assert_eq!(parts[0]["text"], "Explain this diagram.");
+
+        // Second part must be the inlineData block.
+        let img_part = &parts[1];
+        assert!(
+            img_part.get("inlineData").is_some(),
+            "part must have an 'inlineData' key, got: {img_part}"
+        );
+        assert_eq!(
+            img_part["inlineData"]["mimeType"], "image/webp",
+            "inlineData.mimeType must match the Content mime_type"
+        );
+        assert_eq!(
+            img_part["inlineData"]["data"], "aGVsbG8=",
+            "inlineData.data must be the raw base64 string from Content::Image"
+        );
     }
 }

@@ -75,6 +75,26 @@ pub enum SessionEntry {
         timestamp: DateTime<Utc>,
         label: String,
     },
+    /// A summary of the conversation state captured at a branch point.
+    ///
+    /// When a user navigates to a branch point in the session tree and
+    /// continues from there, this entry records the LLM-generated snapshot of
+    /// what was happening at that point.  It allows future readers (human or
+    /// agent) to understand the context without replaying the full history up
+    /// to the branch.
+    BranchSummary {
+        id: String,
+        /// The entry ID of the branch point this summary describes.
+        branch_entry_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
+        timestamp: DateTime<Utc>,
+        /// The LLM-generated summary text covering goal, decisions, code state,
+        /// modified files, and pending work at the branch point.
+        summary: String,
+        /// Estimated token count of the messages that were summarized.
+        tokens_before: u64,
+    },
 }
 
 impl SessionEntry {
@@ -85,7 +105,8 @@ impl SessionEntry {
             | SessionEntry::Compaction { id, .. }
             | SessionEntry::ModelChange { id, .. }
             | SessionEntry::ThinkingLevelChange { id, .. }
-            | SessionEntry::Label { id, .. } => id,
+            | SessionEntry::Label { id, .. }
+            | SessionEntry::BranchSummary { id, .. } => id,
         }
     }
 }

@@ -18,11 +18,11 @@ pub async fn run_interactive_mode(agent: &Agent) -> Result<()> {
 
 /// The main REPL loop
 async fn repl_loop(agent: &Agent) -> Result<()> {
-    let catalog = crate::skills::SkillCatalog::discover(Path::new(&agent.config.cwd))?;
+    let mut catalog = crate::skills::SkillCatalog::discover(Path::new(&agent.config.cwd))?;
     let mut active_skills = crate::skills::ActiveSkills::default();
     if !catalog.is_empty() {
         println!(
-            "[skills loaded: {}] use /skills, /skill:list, /skill:<name>, /skill:clear",
+            "[skills loaded: {}] use /skills, /skill:list, /skill:<name>, /skill:clear, /skill:install <path>",
             catalog.len()
         );
     }
@@ -64,6 +64,24 @@ async fn repl_loop(agent: &Agent) -> Result<()> {
         if input == "/skill:clear" {
             active_skills.clear();
             println!("[skills] cleared");
+            continue;
+        }
+        if let Some(path) = input.strip_prefix("/skill:install ") {
+            let source = Path::new(path.trim());
+            match crate::skills::install_skill_into_project(Path::new(&agent.config.cwd), source) {
+                Ok(installed) => {
+                    crate::skills::register_skill_tool(agent, installed.clone()).await;
+                    catalog.upsert(installed.clone());
+                    println!(
+                        "[skills] installed '{}' at {}",
+                        installed.name,
+                        installed.path.display()
+                    );
+                }
+                Err(err) => {
+                    println!("[skills] install failed: {}", err);
+                }
+            }
             continue;
         }
         if let Some(name) = input.strip_prefix("/skill:") {

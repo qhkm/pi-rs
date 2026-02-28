@@ -11,6 +11,26 @@ use crate::models::registry::Model;
 use crate::streaming::events::StreamEvent;
 use crate::tools::schema::ToolDefinition;
 
+// ─── Cache policy ─────────────────────────────────────────────────────────────
+
+/// Controls whether prompt-caching breakpoints are injected into requests.
+///
+/// Only providers that support prompt caching (currently Anthropic) act on
+/// this field; all other providers silently ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CachePolicy {
+    /// Do not add any `cache_control` blocks.  This is fully backward-
+    /// compatible — existing callers that never set `cache_policy` on
+    /// `StreamOptions` get this behaviour automatically.
+    #[default]
+    None,
+    /// Automatically insert `cache_control: {"type": "ephemeral"}` at the
+    /// optimal breakpoints (last system-prompt block and last tool definition).
+    /// This is the recommended setting for long-running agents that send the
+    /// same system prompt and tool list repeatedly.
+    Auto,
+}
+
 // ─── Options ──────────────────────────────────────────────────────────────────
 
 /// Base streaming/completion options common across all providers.
@@ -28,6 +48,19 @@ pub struct StreamOptions {
     pub headers: Option<HashMap<String, String>>,
     /// Maximum delay between retries in milliseconds.
     pub max_retry_delay_ms: Option<u64>,
+    /// Explicit thinking/reasoning budget in tokens.
+    ///
+    /// When `Some(n)`, the provider should allocate up to `n` tokens for
+    /// internal reasoning.  A value of `0` is treated as "provider maximum"
+    /// (no explicit cap).  `None` means thinking is disabled or the budget
+    /// should be determined by the provider's own defaults.
+    pub thinking_budget: Option<u64>,
+    /// Prompt-caching policy.
+    ///
+    /// Defaults to [`CachePolicy::None`] so that existing callers are
+    /// unaffected.  Set to [`CachePolicy::Auto`] to let the provider inject
+    /// cache breakpoints at the best positions automatically.
+    pub cache_policy: CachePolicy,
 }
 
 /// Options that include the high-level thinking abstraction.

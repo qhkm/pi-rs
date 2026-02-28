@@ -180,7 +180,8 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
 | @filename expansion | pi-coding-agent | `input/file_processor.rs` — `<file>` tags, image extraction, base64 | 10 |
 | Session branching (branch/fork) | pi-coding-agent | `session/manager.rs` — `branch()`, `fork()` methods | 4 |
 | HTML export | pi-coding-agent | `export/html.rs` — standalone dark-themed HTML with tool calls, thinking | 9 |
-| Skills discovery + slash commands | pi-coding-agent | `skills/mod.rs`, `modes/interactive.rs` — SKILL.md discovery, frontmatter parsing, `/skill:*` commands | 4 |
+| Skills discovery + install workflow | pi-coding-agent | `skills/mod.rs`, `modes/interactive.rs`, `main.rs` — SKILL.md discovery, frontmatter parsing, `/skill:*` commands, skill tool registration, local install command | 6 |
+| Extension loader + shell/binary tools | pi-coding-agent | `extensions/mod.rs`, `main.rs` — local extension discovery, `extension.json` parsing, shell + binary extension tool registration | 4 |
 
 ---
 
@@ -236,8 +237,15 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
   - [ ] Command palette (slash commands)
   - [ ] Session tree navigation (`/tree`, `/fork`)
 - [ ] **Extension loader** — scan directories, load manifests, instantiate shell/binary/WASM tools
+  - [x] Discover local extensions from `~/.pi/agent/extensions` and `.pi/extensions`
+  - [x] Parse `extension.json` manifests
+  - [x] Register shell extension tools in agent startup
+  - [x] Binary extension executor wiring (JSON-RPC over stdio)
+  - [ ] WASM extension executor wiring
 - [ ] **WASM plugin executor** — sandboxed execution via `wasmtime`
 - [ ] **Binary plugin executor** — JSON-RPC 2.0 over stdin/stdout with external processes
+  - [x] Basic stdio JSON-RPC request/response execution path
+  - [ ] Multi-message streaming protocol + robust lifecycle management
 - [ ] **Custom commands** — register/execute extension commands
 - [ ] **Event hooks** — session_start, message_end, tool_execution_start, etc.
 - [ ] **Prompt templates** — load reusable snippets from `~/.pi/agent/prompts/`
@@ -245,8 +253,9 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
   - [x] Discover `SKILL.md` from `~/.pi/skills` and `.pi/skills`
   - [x] Parse basic frontmatter (`name`, `description`)
   - [x] Interactive slash commands: `/skills`, `/skill:list`, `/skill:<name>`, `/skill:clear`
-  - [ ] Convert discovered skills into callable tools
-  - [ ] Skill package installation workflow
+  - [x] Convert discovered skills into callable tools (`skill_<name>`)
+  - [x] Local skill installation workflow (`/skill:install <path>`)
+  - [ ] Remote/registry-based skill package installation
 - [ ] **Themes** — configurable color schemes for TUI and markdown
 - [ ] **Model cycling** — `--models` flag for switching between models
 - [ ] **Share** — generate shareable session URL

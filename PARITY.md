@@ -2,7 +2,7 @@
 
 > Generated: 2026-03-01 | pi-rs: 15.5K lines, 103 tests | pi-mono: 128K lines, 100+ test files
 
-## Overall Parity: ~50%
+## Overall Parity: ~55%
 
 ---
 
@@ -140,22 +140,23 @@
 
 ---
 
-### 7. Extension & Plugin System — 5%
+### 7. Extension & Plugin System — 45%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
 | Extension types/manifest | 45KB types | Basic types | ~10% |
-| Extension loader (npm/local) | Yes | No | Missing |
+| Extension loader (npm/local) | Yes | Local directories + JSON manifests | Partial |
 | Extension runner (hooks) | Yes | No | Missing |
 | Hook system (before/after turn) | Yes | No | Missing |
-| Tool registration via extension | Yes | No | Missing |
+| Tool registration via extension | Yes | Shell tools | Partial |
+| Binary plugin executor | Yes | Basic JSON-RPC stdio | Partial |
 | Command registration | Yes | No | Missing |
 | UI integration hooks | Yes | No | Missing |
 | Tool wrapping | Yes | No | Missing |
 
 ---
 
-### 8. Skills System — 35%
+### 8. Skills System — 70%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -163,7 +164,8 @@
 | Frontmatter parsing | Yes | Basic (`name`, `description`) | Partial |
 | /skill:name commands | Yes | Basic (`/skill:*`) | Partial |
 | Discovery from .pi/skills/ | Yes | Yes | **Parity** |
-| Package installation | Yes | No | Missing |
+| Skills converted to tools | Yes | Yes (`skill_<name>`) | **Parity** |
+| Package installation | Yes | Basic local (`/skill:install <path>`) | Partial |
 
 ---
 
@@ -223,12 +225,12 @@
 | Modes | 10% | 45% | 4.5% |
 | Session Management | 8% | 55% | 4.4% |
 | Context & Config | 7% | 60% | 4.2% |
-| Extensions/Plugins | 8% | 5% | 0.4% |
-| Skills | 5% | 35% | 1.8% |
+| Extensions/Plugins | 8% | 45% | 3.6% |
+| Skills | 5% | 70% | 3.5% |
 | Interactive TUI | 10% | 25% | 2.5% |
 | Authentication | 4% | 30% | 1.2% |
 | Peripheral (mom/pods/web) | 3% | 12% | 0.4% |
-| **Total** | **100%** | — | **49.8%** |
+| **Total** | **100%** | — | **54.7%** |
 
 ---
 
@@ -242,20 +244,20 @@
 - Session persistence + branching
 
 ### Biggest Gaps
-1. **Extensions/plugins** (5%) — No loader, runner, or hook dispatch
-2. **Interactive TUI app layer** (25%) — Framework exists, application UI missing
-3. **Skills system** (35%) — Discovery + slash commands landed; tool conversion/installer missing
-4. **OAuth** (0%) — No OAuth flows for any provider
-5. **Cloud providers** — Bedrock, Vertex, Azure all missing
+1. **Interactive TUI app layer** (25%) — Framework exists, application UI missing
+2. **Extensions/plugins** (45%) — Local loader + shell/binary tools landed; hooks/commands/WASM missing
+3. **OAuth** (0%) — No OAuth flows for any provider
+4. **Cloud providers** — Bedrock, Vertex, Azure all missing
+5. **Modes (SDK + richer RPC/UI)** — Core modes exist, but SDK mode and richer interactive protocol are missing
 
 ### Top 5 Items to Close the Gap Fastest
 
 | Priority | Item | Estimated Impact |
 |----------|------|-----------------|
 | 1 | Interactive TUI application layer (streaming display, selectors, slash commands) | +7% |
-| 2 | Extension/plugin system (loader, runner, hook dispatch) | +6% |
-| 3 | Skills system (frontmatter parsing, discovery, /skill commands) | +5% |
+| 2 | Extension/plugin system (hooks, commands, WASM executor) | +3% |
+| 3 | OAuth framework (token storage, refresh, provider flows) | +3% |
 | 4 | Cloud providers (Bedrock, Vertex, Azure) | +4% |
-| 5 | OAuth framework (token storage, refresh, provider flows) | +3% |
+| 5 | Rich interactive mode features (streaming UI, selectors, slash UX) | +3% |
 
-Completing all 5 would bring parity from **48% to ~73%**.
+Completing all 5 would bring parity from **~55% to ~75%**.

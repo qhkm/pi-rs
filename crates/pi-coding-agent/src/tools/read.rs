@@ -1,4 +1,5 @@
 use super::operations::{resolve_and_validate_path, FileOperations};
+use super::truncate::{smart_truncate, TruncationConfig};
 use async_trait::async_trait;
 use pi_agent_core::{AgentTool, ToolContext, ToolResult};
 use serde_json::Value;
@@ -76,6 +77,9 @@ impl AgentTool for ReadTool {
         if output.is_empty() {
             output = "(empty file)".to_string();
         }
+
+        let cfg = TruncationConfig::default();
+        let output = smart_truncate(&output, &cfg);
 
         Ok(ToolResult::success(output))
     }

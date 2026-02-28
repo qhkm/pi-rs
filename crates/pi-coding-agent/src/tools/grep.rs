@@ -1,3 +1,4 @@
+use super::truncate::{smart_truncate, TruncationConfig};
 use async_trait::async_trait;
 use pi_agent_core::{AgentTool, ToolContext, ToolResult};
 use regex::Regex;
@@ -90,24 +91,26 @@ impl AgentTool for GrepTool {
             .output()
             .await;
 
+        let trunc_cfg = TruncationConfig::default();
+
         match output {
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
+                // Apply the user-requested line limit first (fast, cheap).
                 let lines: Vec<&str> = stdout.lines().take(limit).collect();
                 if lines.is_empty() {
                     Ok(ToolResult::success("No matches found"))
                 } else {
                     let total_lines = stdout.lines().count();
-                    let truncated = if total_lines > limit {
-                        format!("\n... (truncated at {} matches)", limit)
+                    let line_cap_notice = if total_lines > limit {
+                        format!("\n... (capped at {} matches by limit parameter)", limit)
                     } else {
                         String::new()
                     };
-                    Ok(ToolResult::success(format!(
-                        "{}{}",
-                        lines.join("\n"),
-                        truncated
-                    )))
+                    // Combine the match lines and any line-cap notice, then
+                    // apply character-level smart truncation.
+                    let combined = format!("{}{}", lines.join("\n"), line_cap_notice);
+                    Ok(ToolResult::success(smart_truncate(&combined, &trunc_cfg)))
                 }
             }
             Err(e) => Ok(ToolResult::error(format!("grep failed: {e}"))),

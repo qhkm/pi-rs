@@ -3,6 +3,64 @@ use serde::{Deserialize, Serialize};
 
 // ─── Summarization prompts (ported from pi-mono compaction.ts) ───────────────
 
+/// System prompt for branch-point summarization.
+///
+/// This is used when generating a summary to capture the state of the
+/// conversation at a specific branch point so that navigating back to that
+/// branch and continuing makes sense without full conversation replay.
+pub const BRANCH_SUMMARIZATION_SYSTEM_PROMPT: &str = "\
+You are a conversation state summarizer for an AI coding agent. \
+Your job is to produce a concise but complete snapshot of where the conversation \
+stands at a specific point in time (a branch point), so that a developer can \
+return to this exact point later and continue meaningfully.
+
+Rules:
+- Focus on what matters for continuation: goal, decisions, code state
+- List ALL files that were created or modified, with exact paths
+- Preserve exact variable names, function names, and technical identifiers
+- Note any pending work or next steps explicitly discussed
+- Be precise about the state of the code — not just what was planned, but what was done
+- Do NOT add information that wasn't present in the conversation
+- Use the exact structured format requested";
+
+/// User-side prompt for branch-point summarization.
+///
+/// The placeholder `{conversation}` is replaced with the serialized messages
+/// up to the branch point before the prompt is sent to the LLM.
+pub const BRANCH_SUMMARIZATION_PROMPT: &str = "\
+Summarize the conversation up to this branch point into a structured snapshot. \
+This snapshot must be complete enough for someone to return to this exact point \
+and continue working without needing the full conversation history.
+
+Use this exact format:
+
+## Goal
+[What the user was trying to accomplish at this branch point]
+
+## Decisions Made
+[Key decisions made up to this point, including rationale where given]
+
+## Code / Project State
+[Exact state of the code or project — which features/functions were implemented, \
+which are partial, which are broken. Be specific about what works and what doesn't.]
+
+## Files Modified
+[Exact file paths that were created or modified, one per line, prefixed with the action:
+  - created: path/to/file
+  - modified: path/to/file
+  - deleted: path/to/file]
+
+## Pending / Next Steps
+[Work that was explicitly planned or in-flight but not yet complete at this branch point]
+
+## Critical Context
+[Error messages, environment details, configuration values, constraints, or anything \
+else essential for understanding the state at this branch point]
+
+<conversation>
+{conversation}
+</conversation>";
+
 /// System prompt for the summarization LLM call
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "\
 You are a conversation summarizer. Your job is to create a structured summary \
@@ -115,6 +173,31 @@ impl Default for CompactionSettings {
             enabled: true,
             reserve_tokens: 16384,
             keep_recent_tokens: 20000,
+        }
+    }
+}
+
+/// Configuration for branch-point summarization.
+///
+/// Controls whether branch summaries are generated when the user navigates to
+/// a branch point, and how many tokens to budget for the generated summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchSummarizationSettings {
+    /// Whether branch-point summarization is enabled.  When `false`,
+    /// `summarize_branch_point` returns the raw serialized messages instead
+    /// of triggering an LLM call.
+    pub enabled: bool,
+    /// Token budget reserved for the generated summary.  Corresponds to the
+    /// `max_tokens` value passed to the summarization LLM call.
+    /// Default: 4096.
+    pub reserve_tokens: u64,
+}
+
+impl Default for BranchSummarizationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            reserve_tokens: 4096,
         }
     }
 }
@@ -248,6 +331,26 @@ pub fn build_compaction_prompt(
     (system_prompt, user_prompt)
 }
 
+/// Build a prompt pair `(system_prompt, user_prompt)` to summarize the
+/// conversation state at a branch point.
+///
+/// The returned prompts are ready to be forwarded to an LLM — the caller is
+/// responsible for actually performing the API call.  Tests should exercise
+/// this function directly without making any LLM call.
+///
+/// # Parameters
+/// - `messages_text`: the serialized conversation up to the branch point,
+///   typically produced by [`serialize_conversation`].
+///
+/// # Returns
+/// `(system_prompt, user_prompt)` where both strings can be passed to the LLM
+/// as the system and user roles respectively.
+pub fn build_branch_summary_prompt(messages_text: &str) -> (String, String) {
+    let system_prompt = BRANCH_SUMMARIZATION_SYSTEM_PROMPT.to_string();
+    let user_prompt = BRANCH_SUMMARIZATION_PROMPT.replace("{conversation}", messages_text);
+    (system_prompt, user_prompt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +427,114 @@ mod tests {
         assert!(user.contains("</previous-summary>"));
         assert!(user.contains("<conversation>"));
         assert!(user.contains("new conversation"));
+    }
+
+    // ─── Branch summarization tests ──────────────────────────────────────────
+
+    /// `build_branch_summary_prompt` must embed the conversation text and use
+    /// the branch-specific system prompt (not the generic compaction one).
+    #[test]
+    fn test_build_branch_summary_prompt_embeds_conversation() {
+        let conversation = "[User]: Please refactor the auth module\n\
+                            [Assistant]: I'll start by reading auth.rs\n\
+                            [Assistant] tool_call: read_file({\"path\":\"src/auth.rs\"})";
+
+        let (sys, user) = build_branch_summary_prompt(conversation);
+
+        // System prompt must be the branch-specific one, not the generic compaction prompt.
+        assert!(
+            sys.contains("branch point"),
+            "system prompt should mention 'branch point'"
+        );
+        assert!(
+            sys.contains("coding agent"),
+            "system prompt should reference coding agent context"
+        );
+        // Must NOT be the generic compaction system prompt.
+        assert!(
+            !sys.contains("conversation summarizer"),
+            "should not use generic compaction system prompt"
+        );
+
+        // User prompt must contain the conversation wrapped in <conversation> tags.
+        assert!(
+            user.contains("<conversation>"),
+            "user prompt must open <conversation> tag"
+        );
+        assert!(
+            user.contains("</conversation>"),
+            "user prompt must close </conversation> tag"
+        );
+        assert!(
+            user.contains(conversation),
+            "user prompt must embed the full conversation text"
+        );
+
+        // User prompt must request all required sections.
+        assert!(user.contains("## Goal"), "must request ## Goal section");
+        assert!(
+            user.contains("## Decisions Made"),
+            "must request ## Decisions Made section"
+        );
+        assert!(
+            user.contains("## Code / Project State"),
+            "must request ## Code / Project State section"
+        );
+        assert!(
+            user.contains("## Files Modified"),
+            "must request ## Files Modified section"
+        );
+        assert!(
+            user.contains("## Pending / Next Steps"),
+            "must request ## Pending / Next Steps section"
+        );
+        assert!(
+            user.contains("## Critical Context"),
+            "must request ## Critical Context section"
+        );
+    }
+
+    /// Empty conversation text produces well-formed prompts with empty
+    /// `<conversation></conversation>` markers — the LLM can handle this
+    /// gracefully.
+    #[test]
+    fn test_build_branch_summary_prompt_empty_conversation() {
+        let (sys, user) = build_branch_summary_prompt("");
+
+        assert!(!sys.is_empty(), "system prompt must not be empty");
+        assert!(user.contains("<conversation>"), "must have opening tag");
+        assert!(user.contains("</conversation>"), "must have closing tag");
+        // The {conversation} placeholder must have been replaced (not left as literal).
+        assert!(
+            !user.contains("{conversation}"),
+            "placeholder must be substituted"
+        );
+    }
+
+    /// `BranchSummarizationSettings::default()` should produce sane defaults.
+    #[test]
+    fn test_branch_summarization_settings_defaults() {
+        let settings = BranchSummarizationSettings::default();
+        assert!(settings.enabled, "should be enabled by default");
+        assert_eq!(
+            settings.reserve_tokens, 4096,
+            "default reserve_tokens should be 4096"
+        );
+    }
+
+    /// Verify that the branch summary prompt does NOT include a
+    /// `<previous-summary>` block (that belongs to incremental compaction, not
+    /// branch summaries).
+    #[test]
+    fn test_build_branch_summary_prompt_has_no_previous_summary_block() {
+        let (_, user) = build_branch_summary_prompt("some messages here");
+        assert!(
+            !user.contains("<previous-summary>"),
+            "branch summary prompt must not include a previous-summary block"
+        );
+        assert!(
+            !user.contains("</previous-summary>"),
+            "branch summary prompt must not include a previous-summary close tag"
+        );
     }
 }

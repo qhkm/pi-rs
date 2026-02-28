@@ -1,8 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use pi_agent_core::{AgentTool, ToolContext, ToolResult};
+use serde_json::Value;
 
 const SKILL_FILE_NAME: &str = "SKILL.md";
 const MAX_SKILL_CHARS: usize = 8_000;
@@ -55,6 +59,10 @@ impl SkillCatalog {
         self.skills.insert(key, skill);
     }
 
+    pub fn upsert(&mut self, skill: Skill) {
+        self.insert(skill);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
@@ -70,6 +78,10 @@ impl SkillCatalog {
 
     pub fn names(&self) -> Vec<String> {
         self.skills.keys().cloned().collect()
+    }
+
+    pub fn skills(&self) -> Vec<Skill> {
+        self.skills.values().cloned().collect()
     }
 }
 
@@ -128,6 +140,73 @@ pub fn decorate_user_text(
     out.push_str("\n[End active skills]\n\n");
     out.push_str(user_text);
     out
+}
+
+pub async fn register_skill_tools(agent: &pi_agent_core::Agent, catalog: &SkillCatalog) -> usize {
+    let mut count = 0usize;
+    for skill in catalog.skills() {
+        let tool = SkillTool::from_skill(skill);
+        agent.register_tool(Arc::new(tool)).await;
+        count += 1;
+    }
+    count
+}
+
+pub async fn register_skill_tool(agent: &pi_agent_core::Agent, skill: Skill) {
+    agent
+        .register_tool(Arc::new(SkillTool::from_skill(skill)))
+        .await;
+}
+
+pub fn install_skill_into_project(cwd: &Path, source: &Path) -> Result<Skill> {
+    let destination_root = cwd.join(".pi").join("skills");
+    install_skill(source, &destination_root)
+}
+
+fn install_skill(source: &Path, destination_root: &Path) -> Result<Skill> {
+    let source_file = if source.is_dir() {
+        source.join(SKILL_FILE_NAME)
+    } else {
+        source.to_path_buf()
+    };
+
+    if source_file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n != SKILL_FILE_NAME)
+        .unwrap_or(true)
+    {
+        anyhow::bail!(
+            "source must be a '{}' file or directory containing '{}'",
+            SKILL_FILE_NAME,
+            SKILL_FILE_NAME
+        );
+    }
+
+    let raw = fs::read_to_string(&source_file)
+        .with_context(|| format!("failed to read skill file '{}'", source_file.display()))?;
+    if raw.trim().is_empty() {
+        anyhow::bail!("skill file is empty: {}", source_file.display());
+    }
+
+    let (name, description, content) = parse_skill_content(&source_file, &raw);
+    let target_dir = destination_root.join(slugify(&name));
+    fs::create_dir_all(&target_dir).with_context(|| {
+        format!(
+            "failed to create destination directory '{}'",
+            target_dir.display()
+        )
+    })?;
+    let target_file = target_dir.join(SKILL_FILE_NAME);
+    fs::write(&target_file, raw)
+        .with_context(|| format!("failed to write '{}'", target_file.display()))?;
+
+    Ok(Skill {
+        name,
+        description,
+        path: target_file,
+        content,
+    })
 }
 
 fn collect_skill_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -222,6 +301,110 @@ fn parse_skill_content(path: &Path, raw: &str) -> (String, String, String) {
     (name, description, body)
 }
 
+fn slugify(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_underscore = false;
+
+    for ch in name.chars() {
+        let normalized = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '_'
+        };
+
+        if normalized == '_' {
+            if !prev_underscore && !out.is_empty() {
+                out.push('_');
+            }
+            prev_underscore = true;
+        } else {
+            out.push(normalized);
+            prev_underscore = false;
+        }
+    }
+
+    while out.ends_with('_') {
+        out.pop();
+    }
+
+    if out.is_empty() {
+        "skill".to_string()
+    } else {
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SkillTool {
+    tool_name: String,
+    skill_name: String,
+    description: String,
+    content: String,
+    source: PathBuf,
+}
+
+impl SkillTool {
+    fn from_skill(skill: Skill) -> Self {
+        let tool_name = format!("skill_{}", slugify(&skill.name));
+        let description = format!(
+            "Load instructions from skill '{}' ({})",
+            skill.name, skill.description
+        );
+        Self {
+            tool_name,
+            skill_name: skill.name,
+            description,
+            content: skill.content,
+            source: skill.path,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentTool for SkillTool {
+    fn name(&self) -> &str {
+        &self.tool_name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Optional short task description for contextualized skill usage"
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: Value, _ctx: &ToolContext) -> pi_agent_core::Result<ToolResult> {
+        let task = args
+            .get("task")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        let mut content = String::new();
+        content.push_str(&format!(
+            "Skill: {}\nSource: {}\n",
+            self.skill_name,
+            self.source.display()
+        ));
+        if let Some(task) = task {
+            content.push_str(&format!("Task: {}\n", task));
+        }
+        content.push('\n');
+        content.push_str(&self.content);
+
+        Ok(ToolResult::success(content))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +472,31 @@ mod tests {
         assert!(out.contains("[Active skills]"));
         assert!(out.contains("Prioritize high severity issues."));
         assert!(out.ends_with("Check src/"));
+    }
+
+    #[test]
+    fn slugify_normalizes_name() {
+        assert_eq!(slugify("Rust Review"), "rust_review");
+        assert_eq!(slugify("C++/Style"), "c_style");
+        assert_eq!(slugify("___"), "skill");
+    }
+
+    #[test]
+    fn install_skill_writes_to_destination() {
+        let tmp = TempDir::new().unwrap();
+        let source_dir = tmp.path().join("source");
+        let destination_root = tmp.path().join("dest").join(".pi").join("skills");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(
+            source_dir.join("SKILL.md"),
+            "---\nname: rust-review\ndescription: review rust\n---\nUse idiomatic Rust.",
+        )
+        .unwrap();
+
+        let installed = install_skill(&source_dir, &destination_root).unwrap();
+        assert_eq!(installed.name, "rust-review");
+        assert!(installed.path.exists());
+        let content = fs::read_to_string(&installed.path).unwrap();
+        assert!(content.contains("Use idiomatic Rust."));
     }
 }
