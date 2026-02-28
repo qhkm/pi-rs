@@ -27,6 +27,11 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# OAuth support
+rand = "0.8"
+keyring = "2"
+dirs = "5"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 

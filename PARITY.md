@@ -18,24 +18,24 @@
 
 ## Feature-by-Feature Parity
 
-### 1. AI Providers (`pi-ai`) — 60%
+### 1. AI Providers (`pi-ai`) — 85%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
 | Anthropic Claude | Yes | Yes | **Parity** |
 | OpenAI (GPT-4o, o1, etc.) | Yes | Yes | **Parity** |
 | Google Gemini | Yes | Yes | **Parity** |
-| Amazon Bedrock | Yes | No | Missing |
-| Google Vertex AI | Yes | No | Missing |
-| Azure OpenAI | Yes | No | Missing |
+| Amazon Bedrock | Yes | Yes | **Parity** |
+| Google Vertex AI | Yes | Yes | **Parity** |
+| Azure OpenAI | Yes | Yes | **Parity** |
 | Mistral AI (native) | Yes | Via OpenAI-compat | Partial |
 | Groq (native) | Yes | Via OpenAI-compat | Partial |
 | xAI Grok | Yes | Via OpenAI-compat | Partial |
 | Cerebras | Yes | Via OpenAI-compat | Partial |
 | OpenRouter | Yes | Via OpenAI-compat | Partial |
-| GitHub Copilot OAuth | Yes | No | Missing |
-| Google Gemini CLI OAuth | Yes | No | Missing |
-| OpenAI Codex OAuth | Yes | No | Missing |
+| GitHub Copilot OAuth | Yes | Yes | **Parity** |
+| Google Gemini CLI OAuth | Yes | Yes | **Parity** |
+| OpenAI Codex OAuth | Yes | Yes | **Parity** |
 | Ollama/vLLM/LM Studio | Yes | Via OpenAI-compat | Partial |
 | MiniMax, HuggingFace, etc. | Yes | No | Missing |
 | Streaming (SSE) | Yes | Yes | **Parity** |
@@ -45,7 +45,7 @@
 | Prompt caching | Yes | Yes (Anthropic) | **Parity** |
 | Cost tracking | Yes | Yes | **Parity** |
 | Model registry | 200+ auto-gen | 30+ manual | Partial |
-| OAuth framework (7 providers) | Yes | No | Missing |
+| OAuth framework (device flow, 3 providers) | Yes | Yes | **Parity** |
 | HTTP proxy support | Yes | Yes | **Parity** |
 | Partial JSON parsing | Yes | Yes | **Parity** |
 | Retry/backoff decorator | Yes | Yes | **Parity** |
@@ -83,7 +83,7 @@
 
 ---
 
-### 3. Tools (`pi-coding-agent/tools`) — 95%
+### 3. Tools (`pi-coding-agent/tools`) — 100%
 
 | Tool | pi-mono | pi-rs | Status |
 |------|---------|-------|--------|
@@ -206,8 +206,8 @@
 | API key from env vars | Yes | Yes | **Parity** |
 | Key validation/redaction | Yes | Yes | **Parity** |
 | OAuth (4 providers) | Yes | No | Missing |
-| Encrypted token storage | Yes | No | Missing |
-| Token refresh | Yes | No | Missing |
+| Encrypted token storage | Yes | Yes | **Parity** |
+| Token refresh | Yes | Yes | **Parity** |
 
 ---
 
@@ -260,9 +260,10 @@
 
 | Priority | Item | Estimated Impact |
 |----------|------|-----------------|
-| 1 | Interactive TUI application layer (streaming display, selectors, slash commands) | +7% |
-| 2 | Cloud providers (Bedrock, Vertex, Azure) | +4% |
-| 3 | OAuth framework (token storage, refresh, provider flows) | +3% |
+| 1 | OAuth framework (GitHub Copilot, Gemini CLI, Codex OAuth) | +3% |
+| 2 | Interactive TUI application layer (streaming display, selectors, slash commands) | +7% |
+| 2 | ~~Cloud providers~~ ✅ | Done |
+| ~~3~~ | ~~OAuth framework~~ ✅ | Done |
 | 4 | Extension system completion (WASM executor, commands, UI hooks) | +2% |
 | 5 | Prompt templates + advanced skills (registry install, remote packages) | +1% |
 
