@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use pi_agent_core::{Agent, AgentEvent};
 use pi_ai::{Content, Message};
@@ -6,18 +8,18 @@ use std::path::Path;
 use tokio::task::LocalSet;
 
 /// Run in interactive TUI mode
-pub async fn run_interactive_mode(agent: &Agent) -> Result<()> {
+pub async fn run_interactive_mode(agent: Arc<Agent>) -> Result<()> {
     println!("pi interactive mode (type 'exit' or '/quit' to quit)");
     println!("---");
 
-    // Use a LocalSet so we can spawn non-Send futures (the agent lives as &Agent)
+    // Use a LocalSet so we can spawn non-Send futures
     let local = LocalSet::new();
 
     local.run_until(repl_loop(agent)).await
 }
 
 /// The main REPL loop
-async fn repl_loop(agent: &Agent) -> Result<()> {
+async fn repl_loop(agent: Arc<Agent>) -> Result<()> {
     let mut catalog = crate::skills::SkillCatalog::discover(Path::new(&agent.config.cwd))?;
     let mut active_skills = crate::skills::ActiveSkills::default();
     if !catalog.is_empty() {
@@ -70,7 +72,7 @@ async fn repl_loop(agent: &Agent) -> Result<()> {
             let source = Path::new(path.trim());
             match crate::skills::install_skill_into_project(Path::new(&agent.config.cwd), source) {
                 Ok(installed) => {
-                    crate::skills::register_skill_tool(agent, installed.clone()).await;
+                    crate::skills::register_skill_tool(&agent, installed.clone()).await;
                     catalog.upsert(installed.clone());
                     println!(
                         "[skills] installed '{}' at {}",
@@ -111,7 +113,7 @@ async fn repl_loop(agent: &Agent) -> Result<()> {
         if blocks.is_empty() {
             continue;
         }
-        run_prompt_with_events(agent, Message::user_with_images(blocks)).await?;
+        run_prompt_with_events(&agent, Message::user_with_images(blocks)).await?;
     }
 
     Ok(())
@@ -144,27 +146,14 @@ fn print_skill_list(catalog: &crate::skills::SkillCatalog, active: &crate::skill
 
 /// Subscribe to agent events, fire off agent.prompt() as a local task, and drive the
 /// event loop on the current task until the agent signals it is done.
-async fn run_prompt_with_events(agent: &Agent, input: Message) -> Result<()> {
+async fn run_prompt_with_events(agent: &Arc<Agent>, input: Message) -> Result<()> {
     // Subscribe *before* spawning the prompt so we don't miss any early events
     let mut rx = agent.subscribe();
 
-    // Spawn agent.prompt() as a local task (no Send requirement)
-    // SAFETY: `agent` lives for the duration of this function.  The local task is
-    // awaited (via the join handle) before we return, so the borrow is valid.
-    let input_owned = input;
-    let agent_ptr = agent as *const Agent;
-    // Wrap the raw pointer in a newtype that asserts Send.  This is safe because:
-    //   1. Agent is internally Arc-based with tokio primitives (all Send).
-    //   2. The spawned local task completes before we leave this function.
-    struct SendAgent(*const Agent);
-    // SAFETY: Agent contains only Send types; the raw pointer stays valid.
-    unsafe impl Send for SendAgent {}
-
-    let wrapped = SendAgent(agent_ptr);
+    // Clone the Arc so the spawned task owns its own handle to the agent.
+    let agent_clone = Arc::clone(agent);
     let prompt_handle = tokio::task::spawn_local(async move {
-        // SAFETY: wrapped.0 was created from a valid &Agent that outlives this task.
-        let a = unsafe { &*wrapped.0 };
-        a.prompt_message(input_owned).await
+        agent_clone.prompt_message(input).await
     });
 
     // Drive the event stream until the agent signals completion

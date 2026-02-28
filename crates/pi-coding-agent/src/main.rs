@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
         thinking_budgets: None,
     };
 
-    let agent = Agent::new(config);
+    let agent = Arc::new(Agent::new(config));
     if resolved_models.len() > 1 {
         agent.configure_model_cycle(resolved_models).await;
     }
@@ -183,9 +183,9 @@ async fn main() -> Result<()> {
         persist_new_messages(&mut session_manager, &agent, baseline).await?;
         mode_result?;
     } else if args.mode == "rpc" {
-        pi_coding_agent::modes::rpc::run_rpc_mode(&agent).await?;
+        pi_coding_agent::modes::rpc::run_rpc_mode(Arc::clone(&agent)).await?;
     } else {
-        pi_coding_agent::modes::interactive::run_interactive_mode(&agent).await?;
+        pi_coding_agent::modes::interactive::run_interactive_mode(Arc::clone(&agent)).await?;
     }
 
     Ok(())

@@ -13,13 +13,13 @@ use super::rpc_types::*;
 ///
 /// Commands arrive as JSON-lines on stdin. Responses and events are written as
 /// JSON-lines on stdout. Diagnostic messages go to stderr.
-pub async fn run_rpc_mode(agent: &Agent) -> Result<()> {
+pub async fn run_rpc_mode(agent: Arc<Agent>) -> Result<()> {
     let local = LocalSet::new();
     local.run_until(rpc_loop(agent)).await
 }
 
 /// The main RPC loop: subscribe to agent events, read stdin commands, dispatch.
-async fn rpc_loop(agent: &Agent) -> Result<()> {
+async fn rpc_loop(agent: Arc<Agent>) -> Result<()> {
     // Track whether a prompt is currently running so we can reject concurrent prompts.
     let is_prompting = Arc::new(AtomicBool::new(false));
 
@@ -80,7 +80,7 @@ async fn rpc_loop(agent: &Agent) -> Result<()> {
 
         match serde_json::from_str::<RpcCommand>(trimmed) {
             Ok(command) => {
-                handle_command(agent, &command, &is_prompting).await;
+                handle_command(&agent, &command, &is_prompting).await;
             }
             Err(e) => {
                 let response =
@@ -100,7 +100,7 @@ async fn rpc_loop(agent: &Agent) -> Result<()> {
 /// For `Prompt`, the actual LLM call is spawned as a local task so the stdin
 /// reader continues to accept commands (particularly `abort`). All other
 /// commands are handled synchronously.
-async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<AtomicBool>) {
+async fn handle_command(agent: &Arc<Agent>, command: &RpcCommand, is_prompting: &Arc<AtomicBool>) {
     let id = command.id().map(|s| s.to_string());
     let cmd_type = command.type_name();
 
@@ -141,18 +141,10 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
                     Message::user_with_images(blocks)
                 };
                 let flag = is_prompting.clone();
-
-                // SAFETY: `agent` is owned by the caller and lives for the entire
-                // RPC session. The spawned local task runs on the same thread and
-                // the LocalSet outlives it.
-                let agent_ptr = agent as *const Agent;
-                struct SendAgent(*const Agent);
-                unsafe impl Send for SendAgent {}
-                let wrapped = SendAgent(agent_ptr);
+                let agent_clone = Arc::clone(agent);
 
                 tokio::task::spawn_local(async move {
-                    let a = unsafe { &*wrapped.0 };
-                    if let Err(e) = a.prompt_message(input_message).await {
+                    if let Err(e) = agent_clone.prompt_message(input_message).await {
                         // Prompt errors are already emitted as AgentEnd events,
                         // but log to stderr for debugging.
                         eprintln!("[rpc] prompt error: {e}");
