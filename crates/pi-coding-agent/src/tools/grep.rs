@@ -116,4 +116,8 @@ impl AgentTool for GrepTool {
             Err(e) => Ok(ToolResult::error(format!("grep failed: {e}"))),
         }
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(GrepTool)
+    }
 }

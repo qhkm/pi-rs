@@ -83,4 +83,8 @@ impl AgentTool for ReadTool {
 
         Ok(ToolResult::success(output))
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(ReadTool { ops: self.ops.clone() })
+    }
 }

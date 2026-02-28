@@ -403,6 +403,16 @@ impl AgentTool for SkillTool {
 
         Ok(ToolResult::success(content))
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(SkillTool {
+            tool_name: self.tool_name.clone(),
+            skill_name: self.skill_name.clone(),
+            description: self.description.clone(),
+            content: self.content.clone(),
+            source: self.source.clone(),
+        })
+    }
 }
 
 #[cfg(test)]

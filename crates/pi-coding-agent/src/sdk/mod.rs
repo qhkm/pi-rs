@@ -168,6 +168,10 @@ impl AgentSession {
             api_key_override: None,
             api_key_resolver: None,
             thinking_budgets: None,
+            session_id: None,
+            event_log_path: None,
+            streaming_tool_execution: false,
+            thinking_budget_selector: None,
         };
 
         let agent = Agent::new(config);

@@ -68,4 +68,8 @@ impl AgentTool for WriteTool {
             path.display()
         )))
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(WriteTool { ops: self.ops.clone() })
+    }
 }

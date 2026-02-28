@@ -263,6 +263,16 @@ impl AgentTool for RuntimeExtensionTool {
             }
         }
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(RuntimeExtensionTool {
+            tool_name: self.tool_name.clone(),
+            description: self.description.clone(),
+            parameters: self.parameters.clone(),
+            declared_tool_name: self.declared_tool_name.clone(),
+            executor: self.executor.clone(),
+        })
+    }
 }
 
 #[derive(Clone, Copy)]

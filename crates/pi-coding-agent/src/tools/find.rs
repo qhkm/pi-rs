@@ -71,4 +71,8 @@ impl AgentTool for FindTool {
             )))
         }
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(FindTool)
+    }
 }

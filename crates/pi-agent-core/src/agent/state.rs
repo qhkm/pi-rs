@@ -78,6 +78,26 @@ pub struct AgentConfig {
     /// `api_key_override` when both are present, allowing callers to rotate
     /// or tenant-scope keys at runtime without rebuilding the agent.
     pub api_key_resolver: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// Session ID for cache reuse across requests.
+    ///
+    /// When set, this is passed to providers that support prompt caching
+    /// (e.g., Anthropic) to enable cache hits across multiple turns.
+    pub session_id: Option<String>,
+    /// Event persistence configuration.
+    ///
+    /// When set, agent events are written to this path for replay/debugging.
+    pub event_log_path: Option<std::path::PathBuf>,
+    /// Enable streaming tool execution with progress events.
+    ///
+    /// When true, tools that support `execute_streaming()` will be called
+    /// with progress updates emitted as `ToolExecutionUpdate` events.
+    pub streaming_tool_execution: bool,
+    /// Dynamic thinking budget selector for per-turn thinking level adjustment.
+    ///
+    /// When set, this closure is called before each LLM request to determine
+    /// the thinking level based on the current context (messages, tools, etc.).
+    /// This allows adaptive reasoning based on task complexity.
+    pub thinking_budget_selector: Option<Box<dyn Fn(&[crate::messages::AgentMessage]) -> Option<ThinkingLevel> + Send + Sync>>,
 }
 
 impl AgentConfig {
@@ -221,6 +241,10 @@ mod tests {
             cwd: ".".to_string(),
             api_key_override: None,
             api_key_resolver: None,
+            session_id: None,
+            event_log_path: None,
+            streaming_tool_execution: false,
+            thinking_budget_selector: None,
         }
     }
 

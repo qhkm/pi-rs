@@ -5,8 +5,8 @@
 //! - **Tool definitions** (`tools`) — JSON Schema-backed tool calling
 //! - **Streaming** (`streaming`) — SSE parsing and event streams
 //! - **Models** (`models`) — model registry with pricing
-//! - **Providers** (`providers`) — Anthropic, OpenAI-compatible, and Google
-//! - **Auth** (`auth`) — API key resolution from environment variables
+//! - **Providers** (`providers`) — Anthropic, OpenAI, Google, Azure, Bedrock, Vertex
+//! - **Auth** (`auth`) — API key and OAuth resolution from environment variables
 //! - **Error types** (`error`) — unified error enum
 //! - **Utils** (`utils`) — shared helpers (partial JSON parser, etc.)
 
@@ -55,7 +55,10 @@ pub use providers::registry::{
 pub use providers::traits::{
     Context, LLMProvider, ProviderCapabilities, SimpleStreamOptions, StreamOptions,
 };
-pub use providers::{AnthropicProvider, GoogleProvider, OpenAICompat, OpenAIProvider};
+pub use providers::{
+    AnthropicProvider, AzureOpenAIProvider, BedrockProvider, GoogleProvider, OpenAICompat,
+    OpenAIProvider, VertexProvider,
+};
 
 // Auth
 pub use auth::api_key::{get_api_key, is_valid_api_key, require_api_key};

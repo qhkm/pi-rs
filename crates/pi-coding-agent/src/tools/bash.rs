@@ -134,4 +134,8 @@ impl AgentTool for BashTool {
             Ok(ToolResult::error(smart_truncate(&result, &cfg)))
         }
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(BashTool)
+    }
 }

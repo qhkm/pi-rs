@@ -22,6 +22,11 @@ tokio-tungstenite = { workspace = true }
 schemars = { workspace = true }
 bytes = "1.5"
 
+# AWS SigV4 signing for Bedrock
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 

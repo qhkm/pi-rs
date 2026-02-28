@@ -459,6 +459,10 @@ impl AgentTool for EditTool {
             )))
         }
     }
+    
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        Box::new(EditTool { ops: self.ops.clone() })
+    }
 }
 
 // ---------------------------------------------------------------------------

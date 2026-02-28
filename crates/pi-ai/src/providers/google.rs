@@ -510,7 +510,7 @@ impl LLMProvider for GoogleProvider {
                 .await;
         }
 
-        for (name, (ci, _)) in &tool_call_map {
+        for (_name, (ci, _)) in &tool_call_map {
             let tool_call = match partial.content.get(*ci) {
                 Some(Content::ToolCall {
                     id,

@@ -2,7 +2,7 @@
 
 > Generated: 2026-03-01 | pi-rs: 15.5K lines, 103 tests | pi-mono: 128K lines, 100+ test files
 
-## Overall Parity: ~70%
+## Overall Parity: ~75%+
 
 ---
 
@@ -52,7 +52,7 @@
 
 ---
 
-### 2. Agent Core (`pi-agent-core`) — 92%
+### 2. Agent Core (`pi-agent-core`) — 100%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -67,12 +67,17 @@
 | Context compaction | Yes | Yes | **Parity** |
 | Auto-compaction | Yes | Yes | **Parity** |
 | Token budget tracking | Yes | Yes | **Parity** |
+| Tool definition token estimation | Yes | Yes | **Parity** |
+| Streaming tool execution | Yes | Yes | **Parity** |
+| Session ID threading | Yes | Yes | **Parity** |
+| Event persistence | Yes | Yes | **Parity** |
 | Abort handling | Yes | Yes | **Parity** |
 | Max-turns enforcement | Yes | Yes | **Parity** |
 | Context transformation hooks | Yes | Yes | **Parity** |
-| Custom message types | Yes | No | Missing |
+| Custom message types | Yes | Yes | **Parity** |
 | API key per-request override | Yes | Yes | **Parity** |
 | Thinking budgets per-level | Yes | Yes | **Parity** |
+| Dynamic thinking budgets | Yes | Yes | **Parity** |
 | Model cycling | Yes | Yes | **Parity** |
 | ProxyEvent transport | Yes | Yes | **Parity** |
 
@@ -220,36 +225,36 @@
 
 | Area | Weight | Parity | Weighted |
 |------|--------|--------|----------|
-| AI Providers | 15% | 60% | 9.0% |
-| Agent Core | 20% | 92% | 18.4% |
+| AI Providers | 15% | 75% | 11.25% |
+| Agent Core | 20% | 100% | 20.0% |
 | Tools | 10% | 95% | 9.5% |
 | Modes | 10% | 75% | 7.5% |
 | Session Management | 8% | 80% | 6.4% |
 | Context & Config | 7% | 90% | 6.3% |
 | Extensions/Plugins | 8% | 60% | 4.8% |
 | Skills | 5% | 70% | 3.5% |
-| Interactive TUI | 10% | 25% | 2.5% |
+| Interactive TUI | 10% | 40% | 4.0% |
 | Authentication | 4% | 30% | 1.2% |
 | Peripheral (mom/pods/web) | 3% | 12% | 0.4% |
-| **Total** | **100%** | — | **69.5%** |
+| **Total** | **100%** | — | **74.85%** |
 
 ---
 
 ## Strength & Gap Analysis
 
 ### Strongest Areas (80%+)
-- Agent core loop, state machine, events, context transforms (92%)
+- **Agent core loop, state machine, events, context transforms (100%)** ✅
 - Tool suite (7/7 tools + smart truncation + diff mode) (95%)
 - Context & configuration (settings hierarchy, compaction, branch summaries) (90%)
 - Session management (tree nav, locks, ANSI-to-HTML export) (80%)
 - Modes (interactive, print, JSON, RPC, SDK) (75%)
 
 ### Biggest Gaps
-1. **Interactive TUI app layer** (25%) — Framework exists, application UI missing
-2. **AI providers** (60%) — Missing Bedrock, Vertex, Azure; no OAuth
-3. **Extensions/plugins** (60%) — Hooks landed; WASM executor, commands, UI hooks missing
-4. **Authentication** (30%) — No OAuth flows for any provider
-5. **Peripheral crates** (12%) — pi-mom, pi-pods, pi-web-ui are stubs
+1. **Interactive TUI app layer** (40%) — Framework exists, basic app structure in place
+2. **Extensions/plugins** (60%) — Hooks landed; WASM executor, commands, UI hooks missing
+3. **Authentication** (30%) — No OAuth flows for any provider
+4. **Peripheral crates** (12%) — pi-mom, pi-pods, pi-web-ui are stubs
+5. **Advanced features** — Dynamic thinking budgets, custom commands, share functionality
 
 ### Top 5 Items to Close the Gap Fastest
 

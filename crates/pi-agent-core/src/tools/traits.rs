@@ -122,4 +122,53 @@ pub trait AgentTool: Send + Sync {
             parameters: self.parameters_schema(),
         }
     }
+    
+    /// Clone this tool into a boxed trait object.
+    /// Required for spawning tool execution in async tasks.
+    fn clone_boxed(&self) -> Box<dyn AgentTool>;
+}
+
+// Make Box<dyn AgentTool> implement AgentTool for cloning
+#[async_trait]
+impl AgentTool for Box<dyn AgentTool> {
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+
+    fn description(&self) -> &str {
+        (**self).description()
+    }
+
+    fn parameters_schema(&self) -> Value {
+        (**self).parameters_schema()
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> crate::Result<ToolResult> {
+        (**self).execute(args, ctx).await
+    }
+
+    async fn execute_streaming(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+        progress_tx: tokio::sync::mpsc::Sender<ToolProgress>,
+    ) -> crate::Result<ToolResult> {
+        (**self).execute_streaming(args, ctx, progress_tx).await
+    }
+
+    fn requires_approval(&self) -> bool {
+        (**self).requires_approval()
+    }
+
+    fn compact_description(&self) -> &str {
+        (**self).compact_description()
+    }
+
+    fn to_tool_definition(&self) -> pi_ai::ToolDefinition {
+        (**self).to_tool_definition()
+    }
+
+    fn clone_boxed(&self) -> Box<dyn AgentTool> {
+        (**self).clone_boxed()
+    }
 }

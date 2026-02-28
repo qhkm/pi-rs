@@ -77,4 +77,9 @@ pub enum AgentEvent {
     },
     /// Result of a user approval decision for a tool
     ToolApprovalResult { call_id: String, approved: bool },
+    /// Dynamic thinking level was selected based on context analysis
+    DynamicThinkingLevel {
+        level: String,
+        reason: String,
+    },
 }

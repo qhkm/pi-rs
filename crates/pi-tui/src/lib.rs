@@ -5,6 +5,7 @@
 //!
 //! ## Architecture
 //!
+//! - [`app`] — High-level application framework for building TUI apps.
 //! - [`terminal`] — Abstract terminal trait + real (ProcessTerminal) and
 //!   virtual (VirtualTerminal for testing) implementations.
 //! - [`components`] — Component trait and all built-in components:
@@ -13,6 +14,7 @@
 //! - [`overlay`] — Overlay/popup management system.
 //! - [`keyboard`] — Kitty keyboard protocol parser and configurable keybindings.
 
+pub mod app;
 pub mod components;
 pub mod keyboard;
 pub mod overlay;
@@ -37,3 +39,6 @@ pub use overlay::{OverlayAnchor, OverlayHandle, OverlayManager, OverlayOptions, 
 pub use keyboard::{EditorAction, KeybindingsManager};
 
 pub use keyboard::kitty::{matches_key, parse_input, Key, KeyEvent, KeyEventType, Modifiers};
+
+// App framework
+pub use app::{App, AppContext, AppResult, FocusArea, LayoutApp};

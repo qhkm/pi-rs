@@ -57,8 +57,11 @@ pub fn register_defaults() -> Vec<String> {
     use crate::auth::api_key::get_api_key;
     use crate::messages::types::Api;
     use crate::providers::anthropic::AnthropicProvider;
+    use crate::providers::azure::AzureOpenAIProvider;
+    use crate::providers::bedrock::BedrockProvider;
     use crate::providers::google::GoogleProvider;
     use crate::providers::openai::OpenAIProvider;
+    use crate::providers::vertex::VertexProvider;
 
     let mut warnings = Vec::new();
 
@@ -94,6 +97,39 @@ pub fn register_defaults() -> Vec<String> {
     } else {
         warnings
             .push("Google provider not registered: set GOOGLE_API_KEY to enable it.".to_string());
+    }
+
+    // Azure OpenAI
+    if let Some(provider) = AzureOpenAIProvider::from_env() {
+        register_provider("azure-openai", Arc::new(provider));
+    } else {
+        warnings.push(
+            "Azure OpenAI provider not registered: set AZURE_OPENAI_API_KEY, \
+             AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT to enable it."
+                .to_string(),
+        );
+    }
+
+    // Amazon Bedrock
+    if let Some(provider) = BedrockProvider::from_env() {
+        register_provider("amazon-bedrock", Arc::new(provider));
+    } else {
+        warnings.push(
+            "Amazon Bedrock provider not registered: set AWS_ACCESS_KEY_ID, \
+             AWS_SECRET_ACCESS_KEY, and AWS_REGION to enable it."
+                .to_string(),
+        );
+    }
+
+    // Google Vertex AI
+    if let Some(provider) = VertexProvider::from_env() {
+        register_provider("google-vertex", Arc::new(provider));
+    } else {
+        warnings.push(
+            "Google Vertex AI provider not registered: set GOOGLE_CLOUD_PROJECT \
+             and ensure gcloud ADC is configured to enable it."
+                .to_string(),
+        );
     }
 
     warnings

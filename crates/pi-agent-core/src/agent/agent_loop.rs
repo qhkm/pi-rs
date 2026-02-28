@@ -14,13 +14,14 @@ use crate::context::compaction::{
     build_compaction_prompt, find_compaction_split, serialize_conversation, should_compact,
     CompactionResult,
 };
+use crate::context::tokens::estimate_tools_tokens;
 
 use crate::agent::events::{AgentEndReason, AgentEvent};
-use crate::agent::state::{AgentConfig, AgentSharedState, AgentState};
+use crate::agent::state::{AgentConfig, AgentSharedState, AgentState, default_thinking_budgets};
 use crate::context::budget::ContextUsage;
 use crate::error::{AgentError, Result};
 use crate::messages::{self, AgentMessage};
-use crate::tools::traits::{ToolContext, ToolResult as AgentToolResult};
+use crate::tools::traits::{ToolContext, ToolProgress, ToolResult as AgentToolResult};
 
 /// A callable that receives the full LLM-visible message list (already
 /// converted from `AgentMessage`) right before it is sent to the provider and
@@ -44,6 +45,8 @@ pub struct Agent {
     /// Ordered list of context transforms applied to a *clone* of the messages
     /// immediately before each LLM call.  Transforms run in registration order.
     context_transforms: Arc<RwLock<Vec<ContextTransformFn>>>,
+    /// Event log file handle (if persistence is enabled)
+    event_log: Arc<RwLock<Option<std::fs::File>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +61,24 @@ impl Agent {
         let (event_tx, _) = broadcast::channel(4096);
         let current_model = config.model.clone();
         let compaction_enabled = config.compaction.enabled;
+        
+        // Initialize event log if path is configured
+        let event_log = if let Some(ref path) = config.event_log_path {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                Ok(file) => Some(file),
+                Err(e) => {
+                    tracing::warn!("Failed to open event log: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
         Self {
             config,
             shared: Arc::new(AgentSharedState::new_with_compaction(compaction_enabled)),
@@ -66,6 +87,7 @@ impl Agent {
             model_cycle: tokio::sync::Mutex::new(None),
             event_tx,
             context_transforms: Arc::new(RwLock::new(Vec::new())),
+            event_log: Arc::new(RwLock::new(event_log)),
         }
     }
 
@@ -497,18 +519,40 @@ impl Agent {
     ) -> Result<AssistantMessage> {
         let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
 
+        // Determine thinking level: dynamic selector takes precedence over static config
+        let current_messages = self.messages.read().await;
+        let dynamic_level = self.config.thinking_budget_selector.as_ref()
+            .and_then(|selector| selector(&current_messages));
+        drop(current_messages);
+        
+        // Use dynamic level if provided, otherwise fall back to static config
+        let effective_thinking_level = dynamic_level.or(self.config.thinking_level);
+        
+        // Emit event if dynamic thinking level was selected
+        if dynamic_level.is_some() {
+            self.emit(AgentEvent::DynamicThinkingLevel {
+                level: format!("{:?}", effective_thinking_level.unwrap()),
+                reason: "Dynamic adjustment based on context".to_string(),
+            });
+        }
+        
         // Resolve the per-request thinking budget from the config's budget table.
         // `resolved_thinking_budget()` returns None when no thinking level is set,
         // or Some(n) where n=0 means "provider maximum / no cap".
-        let thinking_budget = self.config.resolved_thinking_budget();
+        let thinking_budget = self.config.thinking_budgets.as_ref()
+            .and_then(|budgets| effective_thinking_level.and_then(|level| budgets.get(&level).copied()))
+            .or_else(|| effective_thinking_level.and_then(|level| {
+                default_thinking_budgets().get(&level).copied()
+            }));
 
         let options = SimpleStreamOptions {
             base: pi_ai::StreamOptions {
                 api_key: self.resolve_api_key(),
                 thinking_budget,
+                session_id: self.config.session_id.clone(),
                 ..Default::default()
             },
-            reasoning: self.config.thinking_level,
+            reasoning: effective_thinking_level,
             thinking_budgets: None,
         };
 
@@ -698,7 +742,62 @@ impl Agent {
         let ctx =
             ToolContext::new(self.config.cwd.clone()).with_abort(self.shared.abort_rx.clone());
 
-        tool.execute(arguments.clone(), &ctx).await
+        // Use streaming execution if enabled
+        if self.config.streaming_tool_execution {
+            self.execute_tool_streaming(call_id, tool.as_ref(), arguments, &ctx).await
+        } else {
+            tool.execute(arguments.clone(), &ctx).await
+        }
+    }
+    
+    /// Execute a tool with streaming progress updates.
+    async fn execute_tool_streaming(
+        &self,
+        call_id: &str,
+        tool: &dyn crate::tools::traits::AgentTool,
+        arguments: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<AgentToolResult> {
+        let (progress_tx, mut progress_rx) = mpsc::channel::<ToolProgress>(16);
+        
+        // Spawn the streaming execution
+        let args = arguments.clone();
+        let tool_ref = tool.clone_boxed();
+        let ctx_clone = ToolContext::new(ctx.cwd.clone()).with_abort(ctx.abort.clone());
+        
+        let execution_handle = tokio::spawn(async move {
+            tool_ref.execute_streaming(args, &ctx_clone, progress_tx).await
+        });
+        
+        // Collect all progress updates until the channel closes
+        while let Some(progress) = progress_rx.recv().await {
+            match progress {
+                ToolProgress::Started => {
+                    // Already emitted ToolExecutionStart
+                }
+                ToolProgress::Update(msg) => {
+                    self.emit(AgentEvent::ToolExecutionUpdate {
+                        call_id: call_id.to_string(),
+                        progress: msg,
+                    });
+                }
+                ToolProgress::PartialOutput(output) => {
+                    self.emit(AgentEvent::ToolExecutionUpdate {
+                        call_id: call_id.to_string(),
+                        progress: output,
+                    });
+                }
+            }
+        }
+        
+        // Now await the execution handle to get the final result
+        let result = match execution_handle.await {
+            Ok(Ok(tool_result)) => tool_result,
+            Ok(Err(e)) => AgentToolResult::error(format!("Tool error: {e}")),
+            Err(e) => AgentToolResult::error(format!("Execution failed: {e}")),
+        };
+        
+        Ok(result)
     }
 
     /// Block until an approval decision for `call_id` arrives or the timeout elapses.
@@ -827,6 +926,7 @@ impl Agent {
             // Forward the per-request API key override so compaction calls
             // use the same credentials as normal streaming calls.
             api_key: self.resolve_api_key(),
+            session_id: self.config.session_id.clone(),
             ..Default::default()
         };
 
@@ -910,10 +1010,25 @@ impl Agent {
         })
     }
 
-    /// Emit an event to all subscribers
+    /// Emit an event to all subscribers and optionally persist to log.
     fn emit(&self, event: AgentEvent) {
         // broadcast::send returns Err only if there are no receivers, which is fine
-        let _ = self.event_tx.send(event);
+        let _ = self.event_tx.send(event.clone());
+        
+        // Persist to event log if configured
+        if let Ok(log) = self.event_log.try_write() {
+            if let Some(ref file) = *log {
+                let entry = serde_json::json!({
+                    "timestamp": chrono::Utc::now().timestamp_millis(),
+                    "event": event,
+                });
+                if let Ok(line) = serde_json::to_string(&entry) {
+                    use std::io::Write;
+                    let mut file = file;
+                    let _ = writeln!(file, "{}", line);
+                }
+            }
+        }
     }
 
     /// Get estimated context usage
@@ -1018,6 +1133,10 @@ mod tests {
             cwd: "/tmp".to_string(),
             api_key_override: None,
             api_key_resolver: None,
+            session_id: None,
+            event_log_path: None,
+            streaming_tool_execution: false,
+            thinking_budget_selector: None,
         };
         Agent::new(config)
     }
@@ -1247,6 +1366,10 @@ mod tests {
             cwd: "/tmp".to_string(),
             api_key_override,
             api_key_resolver,
+            session_id: None,
+            event_log_path: None,
+            streaming_tool_execution: false,
+            thinking_budget_selector: None,
         };
         Agent::new(config)
     }

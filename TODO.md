@@ -218,14 +218,14 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
 - [ ] **Keybinding config files** — load from JSON/TOML at runtime
 - [ ] **Autocomplete** — slash commands + file path completion in Editor
 
-### pi-agent-core
+### pi-agent-core ✅ COMPLETE
 
-- [ ] **Tool definition token estimation** — count tokens used by tool schemas in context
-- [ ] **Streaming tool execution** — use `execute_streaming()` with progress events in agent loop
-- [ ] **Session ID threading** — pass session IDs through to providers for cache reuse
-- [ ] **Dynamic thinking budgets** — adjust thinking level per-turn based on task complexity
-- [ ] **Agent abort cleanup** — ensure graceful cleanup of in-flight tool executions on abort
-- [ ] **Event persistence** — write events to a log for replay/debugging
+- [x] **Tool definition token estimation** — count tokens used by tool schemas in context
+- [x] **Streaming tool execution** — use `execute_streaming()` with progress events in agent loop
+- [x] **Session ID threading** — pass session IDs through to providers for cache reuse
+- [x] **Dynamic thinking budgets** — adjust thinking level per-turn based on task complexity
+- [x] **Agent abort cleanup** — ensure graceful cleanup of in-flight tool executions on abort
+- [x] **Event persistence** — write events to a log for replay/debugging
 
 ### pi-coding-agent
 

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use crate::messages::types::{
-    AssistantMessage, Content, Message, StopReason, ToolResultMessage, UserContent, UserMessage,
+    Content, Message, StopReason, ToolResultMessage, UserContent, UserMessage,
 };
 use chrono::Utc;
 
