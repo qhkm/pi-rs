@@ -125,11 +125,11 @@ impl BedrockProvider {
         let mut sorted_headers: Vec<_> = headers.iter().collect();
         sorted_headers.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
 
+        // AWS SigV4: each canonical header must end with '\n'.
         let canonical_headers: String = sorted_headers
             .iter()
-            .map(|(k, v)| format!("{}:{}", k.to_lowercase(), v.trim()))
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|(k, v)| format!("{}:{}\n", k.to_lowercase(), v.trim()))
+            .collect::<String>();
 
         let signed_headers: String = sorted_headers
             .iter()
@@ -137,8 +137,12 @@ impl BedrockProvider {
             .collect::<Vec<_>>()
             .join(";");
 
+        // Canonical request format (per AWS SigV4 spec):
+        //   METHOD \n URI \n QUERY \n CANONICAL_HEADERS \n SIGNED_HEADERS \n PAYLOAD_HASH
+        // Note: canonical_headers already ends with \n, so the blank line
+        // separating headers from signed_headers is produced naturally.
         let canonical_request = format!(
-            "{}\n{}\n{}\n{}\n\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}",
             method,
             uri,
             "", // query string (empty for Bedrock)
@@ -355,6 +359,14 @@ fn map_stop_reason(reason: &str) -> StopReason {
 }
 
 // ─── SSE event types from Bedrock ConverseStream ──────────────────────────────
+//
+// NOTE: The real Bedrock ConverseStream API uses AWS event stream binary
+// encoding (`application/vnd.amazon.eventstream`), not plain JSON lines.
+// This JSON-line parser works against the Bedrock *HTTP streaming* endpoint
+// when used via API Gateway / proxy configurations that unwrap the binary
+// framing into newline-delimited JSON.  For direct Bedrock access, replace
+// this parser with one based on `aws-smithy-eventstream`.
+// TODO: Implement proper AWS event stream binary decoding.
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -362,13 +374,27 @@ enum BedrockStreamEvent {
     #[serde(rename = "messageStart")]
     MessageStart { message: BedrockMessageStart },
     #[serde(rename = "contentBlockStart")]
-    ContentBlockStart { contentBlockIndex: usize, start: ContentBlockStart },
+    ContentBlockStart {
+        #[serde(rename = "content_block_index")]
+        content_block_index: usize,
+        start: ContentBlockStart,
+    },
     #[serde(rename = "contentBlockDelta")]
-    ContentBlockDelta { contentBlockIndex: usize, delta: ContentBlockDelta },
+    ContentBlockDelta {
+        #[serde(rename = "content_block_index")]
+        content_block_index: usize,
+        delta: ContentBlockDelta,
+    },
     #[serde(rename = "contentBlockStop")]
-    ContentBlockStop { contentBlockIndex: usize },
+    ContentBlockStop {
+        #[serde(rename = "content_block_index")]
+        content_block_index: usize,
+    },
     #[serde(rename = "messageStop")]
-    MessageStop { stopReason: String },
+    MessageStop {
+        #[serde(rename = "stop_reason")]
+        stop_reason: String,
+    },
     #[serde(rename = "metadata")]
     Metadata { metadata: BedrockMetadata },
 }
@@ -379,23 +405,26 @@ struct BedrockMessageStart {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ContentBlockStart {
     #[serde(default)]
-    toolUse: Option<BedrockToolUseStart>,
+    tool_use: Option<BedrockToolUseStart>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BedrockToolUseStart {
-    toolUseId: String,
+    tool_use_id: String,
     name: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ContentBlockDelta {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
-    toolUse: Option<BedrockToolUseDelta>,
+    tool_use: Option<BedrockToolUseDelta>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,15 +433,17 @@ struct BedrockToolUseDelta {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BedrockMetadata {
     #[serde(default)]
     usage: Option<BedrockUsage>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BedrockUsage {
-    inputTokens: u64,
-    outputTokens: u64,
+    input_tokens: u64,
+    output_tokens: u64,
 }
 
 // ─── LLMProvider implementation ───────────────────────────────────────────────
@@ -566,12 +597,12 @@ impl BedrockProvider {
                 match event {
                     BedrockStreamEvent::MessageStart { .. } => {}
 
-                    BedrockStreamEvent::ContentBlockStart { contentBlockIndex, start } => {
-                        if let Some(tool) = start.toolUse {
-                            let tool_id = tool.toolUseId.clone();
+                    BedrockStreamEvent::ContentBlockStart { content_block_index, start } => {
+                        if let Some(tool) = start.tool_use {
+                            let tool_id = tool.tool_use_id.clone();
                             let tool_name = tool.name.clone();
                             blocks.insert(
-                                contentBlockIndex,
+                                content_block_index,
                                 BlockState {
                                     kind: BlockKind::ToolUse,
                                     text_buf: String::new(),
@@ -581,20 +612,20 @@ impl BedrockProvider {
                                 },
                             );
                             partial.content.push(Content::ToolCall {
-                                id: tool.toolUseId,
+                                id: tool.tool_use_id,
                                 name: tool.name,
                                 arguments: Value::Object(Default::default()),
                                 thought_signature: None,
                             });
                             let _ = tx
                                 .send(StreamEvent::ToolCallStart {
-                                    content_index: contentBlockIndex,
+                                    content_index: content_block_index,
                                     partial: partial.clone(),
                                 })
                                 .await;
                         } else {
                             blocks.insert(
-                                contentBlockIndex,
+                                content_block_index,
                                 BlockState {
                                     kind: BlockKind::Text,
                                     text_buf: String::new(),
@@ -609,41 +640,41 @@ impl BedrockProvider {
                             });
                             let _ = tx
                                 .send(StreamEvent::TextStart {
-                                    content_index: contentBlockIndex,
+                                    content_index: content_block_index,
                                     partial: partial.clone(),
                                 })
                                 .await;
                         }
                     }
 
-                    BedrockStreamEvent::ContentBlockDelta { contentBlockIndex, delta } => {
-                        if let Some(block) = blocks.get_mut(&contentBlockIndex) {
+                    BedrockStreamEvent::ContentBlockDelta { content_block_index, delta } => {
+                        if let Some(block) = blocks.get_mut(&content_block_index) {
                             if let Some(text) = delta.text {
                                 block.text_buf.push_str(&text);
                                 if let Some(Content::Text { text: ref mut t, .. }) =
-                                    partial.content.get_mut(contentBlockIndex)
+                                    partial.content.get_mut(content_block_index)
                                 {
                                     *t = block.text_buf.clone();
                                 }
                                 let _ = tx
                                     .send(StreamEvent::TextDelta {
-                                        content_index: contentBlockIndex,
+                                        content_index: content_block_index,
                                         delta: text,
                                     })
                                     .await;
                             }
-                            if let Some(tool_delta) = delta.toolUse {
+                            if let Some(tool_delta) = delta.tool_use {
                                 if let Some(input) = tool_delta.input {
                                     block.args_buf.push_str(&input);
                                     if let Some(Content::ToolCall { arguments: ref mut a, .. }) =
-                                        partial.content.get_mut(contentBlockIndex)
+                                        partial.content.get_mut(content_block_index)
                                     {
                                         *a = serde_json::from_str(&block.args_buf)
                                             .unwrap_or(Value::String(block.args_buf.clone()));
                                     }
                                     let _ = tx
                                         .send(StreamEvent::ToolCallDelta {
-                                            content_index: contentBlockIndex,
+                                            content_index: content_block_index,
                                             delta: input,
                                         })
                                         .await;
@@ -652,13 +683,13 @@ impl BedrockProvider {
                         }
                     }
 
-                    BedrockStreamEvent::ContentBlockStop { contentBlockIndex } => {
-                        if let Some(block) = blocks.remove(&contentBlockIndex) {
+                    BedrockStreamEvent::ContentBlockStop { content_block_index } => {
+                        if let Some(block) = blocks.remove(&content_block_index) {
                             match block.kind {
                                 BlockKind::Text => {
                                     let _ = tx
                                         .send(StreamEvent::TextEnd {
-                                            content_index: contentBlockIndex,
+                                            content_index: content_block_index,
                                             content: block.text_buf,
                                             partial: partial.clone(),
                                         })
@@ -674,7 +705,7 @@ impl BedrockProvider {
                                     };
                                     let _ = tx
                                         .send(StreamEvent::ToolCallEnd {
-                                            content_index: contentBlockIndex,
+                                            content_index: content_block_index,
                                             tool_call,
                                             partial: partial.clone(),
                                         })
@@ -684,15 +715,15 @@ impl BedrockProvider {
                         }
                     }
 
-                    BedrockStreamEvent::MessageStop { stopReason } => {
-                        partial.stop_reason = map_stop_reason(&stopReason);
+                    BedrockStreamEvent::MessageStop { stop_reason } => {
+                        partial.stop_reason = map_stop_reason(&stop_reason);
                     }
 
                     BedrockStreamEvent::Metadata { metadata } => {
                         if let Some(usage) = metadata.usage {
-                            partial.usage.input = usage.inputTokens;
-                            partial.usage.output = usage.outputTokens;
-                            partial.usage.total_tokens = usage.inputTokens + usage.outputTokens;
+                            partial.usage.input = usage.input_tokens;
+                            partial.usage.output = usage.output_tokens;
+                            partial.usage.total_tokens = usage.input_tokens + usage.output_tokens;
                         }
                     }
                 }

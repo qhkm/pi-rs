@@ -14,6 +14,12 @@
 ///
 /// Optional:
 /// - GOOGLE_APPLICATION_CREDENTIALS (path to service account key file)
+///
+/// **Limitations:**
+/// - Service account JWT signing is not yet implemented.  Use `gcloud auth
+///   application-default login` or set a static access token.
+
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -392,30 +398,35 @@ fn map_stop_reason(reason: &str) -> StopReason {
 // ─── SSE event types from Vertex AI ───────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VertexStreamResponse {
     candidates: Option<Vec<VertexCandidate>>,
-    usageMetadata: Option<VertexUsage>,
+    usage_metadata: Option<VertexUsage>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VertexCandidate {
     content: Option<VertexContent>,
-    finishReason: Option<String>,
+    finish_reason: Option<String>,
+    #[allow(dead_code)]
     index: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 struct VertexContent {
+    #[allow(dead_code)]
     role: Option<String>,
     parts: Option<Vec<VertexPart>>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VertexPart {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
-    functionCall: Option<VertexFunctionCall>,
+    function_call: Option<VertexFunctionCall>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -425,10 +436,11 @@ struct VertexFunctionCall {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VertexUsage {
-    promptTokenCount: Option<u64>,
-    candidatesTokenCount: Option<u64>,
-    totalTokenCount: Option<u64>,
+    prompt_token_count: Option<u64>,
+    candidates_token_count: Option<u64>,
+    total_token_count: Option<u64>,
 }
 
 // ─── LLMProvider implementation ───────────────────────────────────────────────
@@ -531,9 +543,8 @@ impl VertexProvider {
         let mut buffer = String::new();
 
         let mut text_content_index: Option<usize> = None;
-        let mut tool_content_index: Option<usize> = None;
-        let mut _current_tool_name = String::new();
-        let mut current_tool_id = String::new();
+        // Track multiple tool calls by their content index (I4 fix).
+        let mut tool_indices: HashMap<String, usize> = HashMap::new();
 
         let _ = tx
             .send(StreamEvent::Start {
@@ -552,7 +563,6 @@ impl VertexProvider {
 
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            // Vertex returns a stream of JSON objects, each on its own line
             while let Some(pos) = buffer.find('\n') {
                 let line = buffer[..pos].trim().to_string();
                 buffer = buffer[pos + 1..].to_string();
@@ -561,10 +571,9 @@ impl VertexProvider {
                     continue;
                 }
 
-                // Remove trailing comma if present
                 let line = line.trim_end_matches(',');
 
-                let response: VertexStreamResponse = match serde_json::from_str(line) {
+                let resp: VertexStreamResponse = match serde_json::from_str(line) {
                     Ok(r) => r,
                     Err(e) => {
                         debug!("Failed to parse Vertex response line: {e} — line: {line}");
@@ -572,21 +581,21 @@ impl VertexProvider {
                     }
                 };
 
-                if let Some(usage) = &response.usageMetadata {
-                    if let Some(input) = usage.promptTokenCount {
+                if let Some(usage) = &resp.usage_metadata {
+                    if let Some(input) = usage.prompt_token_count {
                         partial.usage.input = input;
                     }
-                    if let Some(output) = usage.candidatesTokenCount {
+                    if let Some(output) = usage.candidates_token_count {
                         partial.usage.output = output;
                     }
-                    if let Some(total) = usage.totalTokenCount {
+                    if let Some(total) = usage.total_token_count {
                         partial.usage.total_tokens = total;
                     }
                 }
 
-                if let Some(candidates) = &response.candidates {
+                if let Some(candidates) = &resp.candidates {
                     for candidate in candidates {
-                        if let Some(finish) = &candidate.finishReason {
+                        if let Some(finish) = &candidate.finish_reason {
                             partial.stop_reason = map_stop_reason(finish);
                         }
 
@@ -604,48 +613,59 @@ impl VertexProvider {
                                                     text_signature: None,
                                                 });
                                                 text_content_index = Some(i);
-                                                let _ = tx.send(StreamEvent::TextStart {
-                                                    content_index: i,
-                                                    partial: partial.clone(),
-                                                }).await;
+                                                let _ = tx
+                                                    .send(StreamEvent::TextStart {
+                                                        content_index: i,
+                                                        partial: partial.clone(),
+                                                    })
+                                                    .await;
                                                 i
                                             }
                                         };
-                                        if let Some(Content::Text { text: ref mut t, .. }) = 
-                                            partial.content.get_mut(ci) 
+                                        if let Some(Content::Text {
+                                            text: ref mut t, ..
+                                        }) = partial.content.get_mut(ci)
                                         {
                                             t.push_str(text);
                                         }
-                                        let _ = tx.send(StreamEvent::TextDelta {
-                                            content_index: ci,
-                                            delta: text.clone(),
-                                        }).await;
+                                        let _ = tx
+                                            .send(StreamEvent::TextDelta {
+                                                content_index: ci,
+                                                delta: text.clone(),
+                                            })
+                                            .await;
                                     }
 
-                                    // Handle function calls
-                                    if let Some(fc) = &part.functionCall {
-                                        let ci = match tool_content_index {
-                                            Some(i) => i,
-                                            None => {
-                                                let i = partial.content.len();
-                                                _current_tool_name = fc.name.clone();
-                                                current_tool_id = format!("vertex_tool_{}", i);
-                                                partial.content.push(Content::ToolCall {
-                                                    id: current_tool_id.clone(),
-                                                    name: fc.name.clone(),
-                                                    arguments: fc.args.clone(),
-                                                    thought_signature: None,
-                                                });
-                                                tool_content_index = Some(i);
-                                                let _ = tx.send(StreamEvent::ToolCallStart {
+                                    // Handle function calls — each unique name
+                                    // gets its own content index so parallel
+                                    // tool calls are tracked independently.
+                                    if let Some(fc) = &part.function_call {
+                                        let ci = if let Some(&existing) =
+                                            tool_indices.get(&fc.name)
+                                        {
+                                            existing
+                                        } else {
+                                            let i = partial.content.len();
+                                            let tool_id = format!("vertex_tool_{}", i);
+                                            partial.content.push(Content::ToolCall {
+                                                id: tool_id,
+                                                name: fc.name.clone(),
+                                                arguments: fc.args.clone(),
+                                                thought_signature: None,
+                                            });
+                                            tool_indices.insert(fc.name.clone(), i);
+                                            let _ = tx
+                                                .send(StreamEvent::ToolCallStart {
                                                     content_index: i,
                                                     partial: partial.clone(),
-                                                }).await;
-                                                i
-                                            }
+                                                })
+                                                .await;
+                                            i
                                         };
-                                        if let Some(Content::ToolCall { arguments: ref mut a, .. }) = 
-                                            partial.content.get_mut(ci) 
+                                        if let Some(Content::ToolCall {
+                                            arguments: ref mut a,
+                                            ..
+                                        }) = partial.content.get_mut(ci)
                                         {
                                             *a = fc.args.clone();
                                         }
@@ -658,35 +678,55 @@ impl VertexProvider {
             }
         }
 
-        // Send end events
+        // Send end events for text
         if let Some(ci) = text_content_index {
-            let text = partial.content.get(ci)
-                .and_then(|c| if let Content::Text { text, .. } = c { Some(text.clone()) } else { None })
+            let text = partial
+                .content
+                .get(ci)
+                .and_then(|c| {
+                    if let Content::Text { text, .. } = c {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
-            let _ = tx.send(StreamEvent::TextEnd {
-                content_index: ci,
-                content: text,
-                partial: partial.clone(),
-            }).await;
+            let _ = tx
+                .send(StreamEvent::TextEnd {
+                    content_index: ci,
+                    content: text,
+                    partial: partial.clone(),
+                })
+                .await;
         }
 
-        if let Some(ci) = tool_content_index {
-            let tool_call = partial.content.get(ci)
-                .and_then(|c| {
-                    if let Content::ToolCall { id, name, arguments, .. } = c {
-                        Some(ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            arguments: arguments.clone(),
-                        })
-                    } else { None }
-                });
+        // Send end events for each tool call
+        for &ci in tool_indices.values() {
+            let tool_call = partial.content.get(ci).and_then(|c| {
+                if let Content::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } = c
+                {
+                    Some(ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    })
+                } else {
+                    None
+                }
+            });
             if let Some(tc) = tool_call {
-                let _ = tx.send(StreamEvent::ToolCallEnd {
-                    content_index: ci,
-                    tool_call: tc,
-                    partial: partial.clone(),
-                }).await;
+                let _ = tx
+                    .send(StreamEvent::ToolCallEnd {
+                        content_index: ci,
+                        tool_call: tc,
+                        partial: partial.clone(),
+                    })
+                    .await;
             }
         }
 
@@ -694,15 +734,19 @@ impl VertexProvider {
 
         let reason = partial.stop_reason.clone();
         if reason == StopReason::Error {
-            let _ = tx.send(StreamEvent::Error {
-                reason,
-                error: partial,
-            }).await;
+            let _ = tx
+                .send(StreamEvent::Error {
+                    reason,
+                    error: partial,
+                })
+                .await;
         } else {
-            let _ = tx.send(StreamEvent::Done {
-                reason,
-                message: partial,
-            }).await;
+            let _ = tx
+                .send(StreamEvent::Done {
+                    reason,
+                    message: partial,
+                })
+                .await;
         }
 
         Ok(())

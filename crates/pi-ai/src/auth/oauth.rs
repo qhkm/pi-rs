@@ -8,6 +8,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+// ─── OAuth Client ID Constants ───────────────────────────────────────────────
+// Centralized to avoid duplication (C3 fix).
+
+/// GitHub Copilot OAuth client ID.
+const GITHUB_COPILOT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+/// Google Gemini CLI OAuth client ID.
+const GOOGLE_GEMINI_CLIENT_ID: &str =
+    "935744712886-p8k8r4irgb56quh6i4r1sf4b5mha4ls1.apps.googleusercontent.com";
+/// OpenAI Codex CLI OAuth client ID.
+const OPENAI_CODEX_CLIENT_ID: &str = "openai-codex-cli";
+
 /// OAuth provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthConfig {
@@ -37,7 +48,7 @@ impl OAuthConfig {
             provider: "github-copilot".to_string(),
             auth_url: "https://github.com/login/oauth/authorize".to_string(),
             token_url: "https://github.com/login/oauth/access_token".to_string(),
-            client_id: "Iv1.b507a08c87ecfe98".to_string(), // GitHub Copilot client ID
+            client_id: GITHUB_COPILOT_CLIENT_ID.to_string(),
             client_secret: None, // Uses device flow
             scopes: vec!["read:user".to_string()],
             pkce_method: None,
@@ -51,7 +62,7 @@ impl OAuthConfig {
             provider: "google-gemini".to_string(),
             auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
             token_url: "https://oauth2.googleapis.com/token".to_string(),
-            client_id: "935744712886-p8k8r4irgb56quh6i4r1sf4b5mha4ls1.apps.googleusercontent.com".to_string(), // Gemini CLI client ID
+            client_id: GOOGLE_GEMINI_CLIENT_ID.to_string(),
             client_secret: None, // Uses installed app flow
             scopes: vec![
                 "https://www.googleapis.com/auth/generative-language.retriever".to_string(),
@@ -68,7 +79,7 @@ impl OAuthConfig {
             provider: "openai-codex".to_string(),
             auth_url: "https://auth.openai.com/authorize".to_string(),
             token_url: "https://auth.openai.com/token".to_string(),
-            client_id: "openai-codex-cli".to_string(),
+            client_id: OPENAI_CODEX_CLIENT_ID.to_string(),
             client_secret: None,
             scopes: vec!["codex".to_string()],
             pkce_method: Some("S256".to_string()),
@@ -236,10 +247,11 @@ impl OAuthManager {
     }
 
     /// Start a device flow authentication.
-    /// 
+    ///
     /// Returns the device code and verification URI for the user to visit.
     pub async fn start_device_flow(&self, provider: &str) -> Result<DeviceFlowResponse> {
-        let config = OAuthConfig::for_provider(provider)
+        // Validate provider name up front.
+        let _config = OAuthConfig::for_provider(provider)
             .ok_or_else(|| PiAiError::Auth(format!("Unknown OAuth provider: {provider}")))?;
 
         match provider {
@@ -328,7 +340,7 @@ impl OAuthManager {
     /// GitHub device flow implementation.
     async fn github_device_flow(&self) -> Result<DeviceFlowResponse> {
         let params = [
-            ("client_id", "Iv1.b507a08c87ecfe98"),
+            ("client_id", GITHUB_COPILOT_CLIENT_ID),
             ("scope", "read:user"),
         ];
 
@@ -362,7 +374,7 @@ impl OAuthManager {
     /// Poll GitHub for device flow completion.
     async fn poll_github_device_flow(&self, device_code: &str) -> Result<StoredToken> {
         let params = [
-            ("client_id", "Iv1.b507a08c87ecfe98"),
+            ("client_id", GITHUB_COPILOT_CLIENT_ID),
             ("device_code", device_code),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ];
@@ -425,7 +437,7 @@ impl OAuthManager {
     /// Google device flow implementation.
     async fn google_device_flow(&self) -> Result<DeviceFlowResponse> {
         let params = [
-            ("client_id", "935744712886-p8k8r4irgb56quh6i4r1sf4b5mha4ls1.apps.googleusercontent.com"),
+            ("client_id", GOOGLE_GEMINI_CLIENT_ID),
             ("scope", "https://www.googleapis.com/auth/generative-language.retriever https://www.googleapis.com/auth/cloud-platform"),
         ];
 
@@ -458,7 +470,7 @@ impl OAuthManager {
     /// Poll Google for device flow completion.
     async fn poll_google_device_flow(&self, device_code: &str) -> Result<StoredToken> {
         let params = [
-            ("client_id", "935744712886-p8k8r4irgb56quh6i4r1sf4b5mha4ls1.apps.googleusercontent.com"),
+            ("client_id", GOOGLE_GEMINI_CLIENT_ID),
             ("device_code", device_code),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ];
@@ -487,7 +499,7 @@ impl OAuthManager {
     async fn openai_device_flow(&self) -> Result<DeviceFlowResponse> {
         // OpenAI uses a custom device flow
         let params = [
-            ("client_id", "openai-codex-cli"),
+            ("client_id", OPENAI_CODEX_CLIENT_ID),
             ("scope", "codex"),
         ];
 
@@ -521,7 +533,7 @@ impl OAuthManager {
     /// Poll OpenAI for device flow completion.
     async fn poll_openai_device_flow(&self, device_code: &str) -> Result<StoredToken> {
         let params = [
-            ("client_id", "openai-codex-cli"),
+            ("client_id", OPENAI_CODEX_CLIENT_ID),
             ("device_code", device_code),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ];
@@ -570,7 +582,11 @@ impl OAuthManager {
 
 impl Default for OAuthManager {
     fn default() -> Self {
-        Self::new().expect("Failed to create OAuthManager")
+        // Fallback: if we cannot create a storage directory, use a temporary one.
+        Self::new().unwrap_or_else(|_| {
+            let tmp = std::env::temp_dir().join("pi-ai-tokens");
+            Self::with_storage_path(tmp).expect("cannot create even a temp OAuthManager")
+        })
     }
 }
 
@@ -626,7 +642,7 @@ struct CopilotTokenResponse {
     token: String,
 }
 
-/// Token storage with encryption.
+/// Token storage with AES-256-GCM encryption.
 pub struct TokenStorage {
     /// Base directory for token storage.
     base_path: PathBuf,
@@ -634,61 +650,83 @@ pub struct TokenStorage {
 
 impl TokenStorage {
     /// Create a new token storage in the default location.
+    ///
+    /// The token directory is created with mode 700 (owner-only) on Unix.
     pub fn new() -> Result<Self> {
         let base_path = dirs::data_dir()
             .ok_or_else(|| PiAiError::Config("Could not find data directory".to_string()))?
             .join("pi-ai")
             .join("tokens");
-        
-        std::fs::create_dir_all(&base_path)
-            ?;
-        
+
+        Self::create_secure_dir(&base_path)?;
         Ok(Self { base_path })
     }
 
     /// Create token storage with a custom path.
     pub fn with_path(path: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&path)
-            ?;
+        Self::create_secure_dir(&path)?;
         Ok(Self { base_path: path })
+    }
+
+    /// Create a directory with mode 700 (owner-only) on Unix.
+    fn create_secure_dir(path: &std::path::Path) -> Result<()> {
+        std::fs::create_dir_all(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
     }
 
     /// Get the path for a provider's token file.
     fn token_path(&self, provider: &str) -> PathBuf {
-        self.base_path.join(format!("{}.json", provider))
+        self.base_path.join(format!("{}.json.enc", provider))
     }
 
-    /// Save a token (encrypted).
+    /// Save a token (encrypted with AES-256-GCM).
     pub fn save_token(&self, provider: &str, token: &StoredToken) -> Result<()> {
         let json = serde_json::to_string(token)
             .map_err(|e| PiAiError::Config(e.to_string()))?;
-        
-        // Encrypt the token before saving
-        let encrypted = self.encrypt(&json)?;
-        
-        std::fs::write(self.token_path(provider), encrypted)
-            ?;
-        
+
+        let encrypted = self.encrypt(json.as_bytes())?;
+        let path = self.token_path(provider);
+        std::fs::write(&path, encrypted)?;
+
+        // Set file permissions to 600 (owner read/write only) on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 
     /// Load a token (decrypted).
     pub fn load_token(&self, provider: &str) -> Result<Option<StoredToken>> {
         let path = self.token_path(provider);
-        
         if !path.exists() {
+            // Also check for legacy unencrypted file during migration.
+            let legacy = self.base_path.join(format!("{}.json", provider));
+            if !legacy.exists() {
+                return Ok(None);
+            }
+            // Legacy path: read the old file, re-save encrypted, delete legacy.
+            let data = std::fs::read_to_string(&legacy)?;
+            if let Ok(token) = serde_json::from_str::<StoredToken>(&data) {
+                let _ = self.save_token(provider, &token);
+                let _ = std::fs::remove_file(&legacy);
+                return Ok(Some(token));
+            }
             return Ok(None);
         }
-        
-        let encrypted = std::fs::read_to_string(&path)
-            ?;
-        
-        // Decrypt the token
-        let json = self.decrypt(&encrypted)?;
-        
-        let token: StoredToken = serde_json::from_str(&json)
+
+        let encrypted = std::fs::read(&path)?;
+        let decrypted = self.decrypt(&encrypted)?;
+
+        let token: StoredToken = serde_json::from_slice(&decrypted)
             .map_err(|e| PiAiError::Config(e.to_string()))?;
-        
+
         Ok(Some(token))
     }
 
@@ -696,8 +734,7 @@ impl TokenStorage {
     pub fn delete_token(&self, provider: &str) -> Result<()> {
         let path = self.token_path(provider);
         if path.exists() {
-            std::fs::remove_file(path)
-                ?;
+            std::fs::remove_file(path)?;
         }
         Ok(())
     }
@@ -705,80 +742,121 @@ impl TokenStorage {
     /// List all stored token providers.
     pub fn list_tokens(&self) -> Result<Vec<String>> {
         let mut providers = Vec::new();
-        
-        for entry in std::fs::read_dir(&self.base_path)
-            ? {
+        for entry in std::fs::read_dir(&self.base_path)? {
             let entry = entry?;
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
-            
-            if name.ends_with(".json") {
-                providers.push(name.trim_end_matches(".json").to_string());
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(provider) = name.strip_suffix(".json.enc") {
+                providers.push(provider.to_string());
+            } else if let Some(provider) = name.strip_suffix(".json") {
+                providers.push(provider.to_string());
             }
         }
-        
         Ok(providers)
     }
 
-    /// Encrypt data using platform keyring or simple XOR as fallback.
-    fn encrypt(&self, data: &str) -> Result<String> {
-        // Try to use keyring for encryption key
-        match self.get_encryption_key_from_keyring() {
-            Ok(key) => Ok(xor_encrypt(data, &key)),
-            Err(_) => {
-                // Fallback: use machine-specific key
-                let key = self.get_machine_key()?;
-                Ok(xor_encrypt(data, &key))
-            }
-        }
+    // ── AES-256-GCM encryption ─────────────────────────────────────────────
+
+    /// Encrypt plaintext using AES-256-GCM.
+    ///
+    /// Output: `nonce (12 bytes) || ciphertext+tag`.
+    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+
+        let key_bytes = self.derive_aes_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key_bytes)
+            .map_err(|e| PiAiError::Auth(format!("AES init error: {e}")))?;
+
+        let mut nonce_bytes = [0u8; 12];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ct = cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|e| PiAiError::Auth(format!("Encryption error: {e}")))?;
+
+        let mut out = Vec::with_capacity(12 + ct.len());
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&ct);
+        Ok(out)
     }
 
-    /// Decrypt data.
-    fn decrypt(&self, data: &str) -> Result<String> {
-        // Try to use keyring for decryption key
-        match self.get_encryption_key_from_keyring() {
-            Ok(key) => Ok(xor_decrypt(data, &key)?),
-            Err(_) => {
-                // Fallback: use machine-specific key
-                let key = self.get_machine_key()?;
-                Ok(xor_decrypt(data, &key)?)
-            }
+    /// Decrypt ciphertext produced by [`Self::encrypt`].
+    fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+
+        if data.len() < 12 {
+            return Err(PiAiError::Auth("Ciphertext too short".to_string()));
         }
+        let key_bytes = self.derive_aes_key()?;
+        let cipher = Aes256Gcm::new_from_slice(&key_bytes)
+            .map_err(|e| PiAiError::Auth(format!("AES init error: {e}")))?;
+
+        let nonce = Nonce::from_slice(&data[..12]);
+        cipher
+            .decrypt(nonce, &data[12..])
+            .map_err(|e| PiAiError::Auth(format!("Decryption error: {e}")))
     }
 
-    /// Get or create encryption key from keyring.
-    fn get_encryption_key_from_keyring(&self) -> Result<String> {
+    /// Derive a 32-byte AES key from the seed using HKDF-SHA256.
+    fn derive_aes_key(&self) -> Result<[u8; 32]> {
+        let seed = self.get_key_seed()?;
+        type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+        let salt = b"pi-ai-token-encryption-v2";
+        // Extract
+        let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(salt)
+            .map_err(|e| PiAiError::Auth(format!("HKDF error: {e}")))?;
+        hmac::Mac::update(&mut mac, seed.as_bytes());
+        let prk = hmac::Mac::finalize(mac).into_bytes();
+        // Expand (single 32-byte block)
+        let mut mac = <HmacSha256 as hmac::Mac>::new_from_slice(&prk)
+            .map_err(|e| PiAiError::Auth(format!("HKDF error: {e}")))?;
+        hmac::Mac::update(&mut mac, b"aes-256-gcm-key");
+        hmac::Mac::update(&mut mac, &[1u8]);
+        let okm = hmac::Mac::finalize(mac).into_bytes();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&okm);
+        Ok(key)
+    }
+
+    /// Obtain the raw key seed. Prefers the OS keyring; falls back to a
+    /// machine-specific value.
+    fn get_key_seed(&self) -> Result<String> {
+        if let Ok(seed) = self.get_seed_from_keyring() {
+            return Ok(seed);
+        }
+        self.get_machine_key()
+    }
+
+    /// Get or create a random seed stored in the OS keyring.
+    fn get_seed_from_keyring(&self) -> Result<String> {
         use keyring::Entry;
-        
+
         let entry = Entry::new("pi-ai", "token-encryption-key")
             .map_err(|e| PiAiError::Auth(e.to_string()))?;
-        
+
         match entry.get_password() {
             Ok(key) => Ok(key),
             Err(_) => {
-                // Generate new key
                 use rand::Rng;
-                let mut rng = rand::thread_rng();
                 let key: String = (0..32)
-                    .map(|_| rng.gen_range(33..127) as u8 as char)
+                    .map(|_| rand::thread_rng().gen_range(33u8..127u8) as char)
                     .collect();
-                
-                entry.set_password(&key)
+                entry
+                    .set_password(&key)
                     .map_err(|e| PiAiError::Auth(e.to_string()))?;
-                
                 Ok(key)
             }
         }
     }
 
-    /// Get machine-specific key as fallback.
+    /// Get a machine-specific key as fallback when the keyring is unavailable.
     fn get_machine_key(&self) -> Result<String> {
         #[cfg(target_os = "macos")]
         {
-            // Use machine serial number or hardware UUID on macOS
             if let Ok(output) = std::process::Command::new("ioreg")
                 .args(["-rd1", "-c", "IOPlatformExpertDevice"])
-                .output() {
+                .output()
+            {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(line) = stdout.lines().find(|l| l.contains("IOPlatformUUID")) {
                     if let Some(uuid) = line.split('"').nth(3) {
@@ -787,49 +865,24 @@ impl TokenStorage {
                 }
             }
         }
-        
+
         #[cfg(target_os = "linux")]
         {
-            // Use machine-id on Linux
             if let Ok(id) = std::fs::read_to_string("/etc/machine-id") {
-                return Ok(id.trim().to_string());
+                let trimmed = id.trim();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed.to_string());
+                }
             }
         }
-        
-        // Ultimate fallback: use a static key (not secure, but functional)
-        Ok("pi-ai-fallback-encryption-key-v1".to_string())
+
+        // Fallback: derive from username + home dir for *some* uniqueness.
+        // This is weaker than a keyring but still machine-local.
+        tracing::warn!("Using weak fallback key — install a keyring backend for proper token security");
+        let user = std::env::var("USER").unwrap_or_default();
+        let home = std::env::var("HOME").unwrap_or_default();
+        Ok(format!("pi-ai-fallback:{user}:{home}"))
     }
-}
-
-/// Simple XOR encryption (for obfuscation, not high security).
-fn xor_encrypt(data: &str, key: &str) -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    
-    let encrypted: Vec<u8> = data
-        .bytes()
-        .zip(key.bytes().cycle())
-        .map(|(d, k)| d ^ k)
-        .collect();
-    
-    STANDARD.encode(encrypted)
-}
-
-/// Simple XOR decryption.
-fn xor_decrypt(data: &str, key: &str) -> Result<String> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    
-    let encrypted = STANDARD
-        .decode(data)
-        .map_err(|e| PiAiError::Config(format!("Base64 decode error: {e}")))?;
-    
-    let decrypted: Vec<u8> = encrypted
-        .iter()
-        .zip(key.bytes().cycle())
-        .map(|(&d, k)| d ^ k)
-        .collect();
-    
-    String::from_utf8(decrypted)
-        .map_err(|e| PiAiError::Config(format!("UTF-8 decode error: {e}")))
 }
 
 /// Convenience function to get an OAuth token for a provider.
@@ -841,7 +894,6 @@ pub async fn get_oauth_token(provider: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn test_stored_token_expiration() {
@@ -884,15 +936,20 @@ mod tests {
     }
 
     #[test]
-    fn test_xor_encryption() {
-        let key = "test-key-12345";
-        let data = "sensitive token data";
-        
-        let encrypted = xor_encrypt(data, key);
-        assert_ne!(encrypted, data);
-        
-        let decrypted = xor_decrypt(&encrypted, key).unwrap();
-        assert_eq!(decrypted, data);
+    fn test_xor_encryption_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("pi-ai-test-{}", uuid::Uuid::new_v4()));
+        let storage = TokenStorage::with_path(dir.clone()).unwrap();
+
+        let plaintext = b"sensitive token data";
+        let encrypted = storage.encrypt(plaintext).unwrap();
+
+        // Ciphertext should differ from plaintext (unless key is all zeros, unlikely)
+        assert_ne!(encrypted, plaintext);
+
+        let decrypted = storage.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

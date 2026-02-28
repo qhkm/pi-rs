@@ -13,6 +13,13 @@ pub enum Api {
     BedrockConverseStream,
     GoogleGenerativeAI,
     GoogleVertex,
+    MistralNative,
+    GroqNative,
+    XAINative,
+    CerebrasNative,
+    OpenRouterNative,
+    MiniMaxNative,
+    HuggingFaceNative,
     #[serde(untagged)]
     Custom(String),
 }
@@ -27,6 +34,13 @@ impl std::fmt::Display for Api {
             Api::BedrockConverseStream => write!(f, "bedrock-converse-stream"),
             Api::GoogleGenerativeAI => write!(f, "google-generative-ai"),
             Api::GoogleVertex => write!(f, "google-vertex"),
+            Api::MistralNative => write!(f, "mistral-native"),
+            Api::GroqNative => write!(f, "groq-native"),
+            Api::XAINative => write!(f, "xai-native"),
+            Api::CerebrasNative => write!(f, "cerebras-native"),
+            Api::OpenRouterNative => write!(f, "openrouter-native"),
+            Api::MiniMaxNative => write!(f, "minimax-native"),
+            Api::HuggingFaceNative => write!(f, "huggingface-native"),
             Api::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -50,6 +64,7 @@ pub enum Provider {
     OpenRouter,
     Mistral,
     HuggingFace,
+    MiniMax,
     #[serde(untagged)]
     Custom(String),
 }
@@ -69,6 +84,7 @@ impl std::fmt::Display for Provider {
             Provider::OpenRouter => write!(f, "open-router"),
             Provider::Mistral => write!(f, "mistral"),
             Provider::HuggingFace => write!(f, "hugging-face"),
+            Provider::MiniMax => write!(f, "minimax"),
             Provider::Custom(s) => write!(f, "{s}"),
         }
     }

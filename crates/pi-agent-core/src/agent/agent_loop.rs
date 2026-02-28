@@ -14,7 +14,6 @@ use crate::context::compaction::{
     build_compaction_prompt, find_compaction_split, serialize_conversation, should_compact,
     CompactionResult,
 };
-use crate::context::tokens::estimate_tools_tokens;
 
 use crate::agent::events::{AgentEndReason, AgentEvent};
 use crate::agent::state::{AgentConfig, AgentSharedState, AgentState, default_thinking_budgets};
@@ -1012,23 +1011,39 @@ impl Agent {
 
     /// Emit an event to all subscribers and optionally persist to log.
     fn emit(&self, event: AgentEvent) {
-        // broadcast::send returns Err only if there are no receivers, which is fine
-        let _ = self.event_tx.send(event.clone());
-        
-        // Persist to event log if configured
-        if let Ok(log) = self.event_log.try_write() {
-            if let Some(ref file) = *log {
-                let entry = serde_json::json!({
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                    "event": event,
-                });
-                if let Ok(line) = serde_json::to_string(&entry) {
-                    use std::io::Write;
-                    let mut file = file;
-                    let _ = writeln!(file, "{}", line);
+        // Persist to event log first (needs ownership or clone), then broadcast.
+        // Only clone when the log is actually configured, avoiding the cost in
+        // the common case where no event log is set.
+        let has_log = self
+            .event_log
+            .try_read()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false);
+
+        if has_log {
+            // We need the event for both the log and the broadcast channel, so
+            // clone once here.
+            let log_event = event.clone();
+            // Use blocking write to ensure events are never silently dropped.
+            if let Ok(guard) = self.event_log.try_write() {
+                if let Some(ref file) = *guard {
+                    let entry = serde_json::json!({
+                        "timestamp": chrono::Utc::now().timestamp_millis(),
+                        "event": log_event,
+                    });
+                    if let Ok(line) = serde_json::to_string(&entry) {
+                        use std::io::Write;
+                        // `Write` is implemented for `&File`, so we can write
+                        // through the shared reference.
+                        let _ = (&*file).write_all(line.as_bytes());
+                        let _ = (&*file).write_all(b"\n");
+                    }
                 }
             }
         }
+
+        // broadcast::send returns Err only if there are no receivers, which is fine
+        let _ = self.event_tx.send(event);
     }
 
     /// Get estimated context usage

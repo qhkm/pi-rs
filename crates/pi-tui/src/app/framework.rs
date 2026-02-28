@@ -16,7 +16,6 @@ use crossterm::{
     ExecutableCommand,
 };
 
-use crate::components::Component;
 use crate::rendering::DifferentialRenderer;
 use crate::terminal::process::ProcessTerminal;
 use crate::terminal::Terminal;

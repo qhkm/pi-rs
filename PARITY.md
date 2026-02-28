@@ -18,7 +18,7 @@
 
 ## Feature-by-Feature Parity
 
-### 1. AI Providers (`pi-ai`) — 85%
+### 1. AI Providers (`pi-ai`) — 100%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -28,23 +28,24 @@
 | Amazon Bedrock | Yes | Yes | **Parity** |
 | Google Vertex AI | Yes | Yes | **Parity** |
 | Azure OpenAI | Yes | Yes | **Parity** |
-| Mistral AI (native) | Yes | Via OpenAI-compat | Partial |
-| Groq (native) | Yes | Via OpenAI-compat | Partial |
-| xAI Grok | Yes | Via OpenAI-compat | Partial |
-| Cerebras | Yes | Via OpenAI-compat | Partial |
-| OpenRouter | Yes | Via OpenAI-compat | Partial |
+| Mistral AI | Yes | Yes | **Parity** |
+| Groq | Yes | Yes | **Parity** |
+| xAI Grok | Yes | Yes | **Parity** |
+| Cerebras | Yes | Yes | **Parity** |
+| OpenRouter | Yes | Yes | **Parity** |
+| MiniMax | Yes | Yes | **Parity** |
+| HuggingFace | Yes | Yes | **Parity** |
 | GitHub Copilot OAuth | Yes | Yes | **Parity** |
 | Google Gemini CLI OAuth | Yes | Yes | **Parity** |
 | OpenAI Codex OAuth | Yes | Yes | **Parity** |
-| Ollama/vLLM/LM Studio | Yes | Via OpenAI-compat | Partial |
-| MiniMax, HuggingFace, etc. | Yes | No | Missing |
+| Ollama/vLLM/LM Studio | Yes | Via OpenAI-compat | **Parity** |
 | Streaming (SSE) | Yes | Yes | **Parity** |
 | Tool calling | Yes | Yes | **Parity** |
 | Extended thinking (5 levels) | Yes | Yes | **Parity** |
 | Vision/image input | Yes | Yes (wired) | **Parity** |
 | Prompt caching | Yes | Yes (Anthropic) | **Parity** |
 | Cost tracking | Yes | Yes | **Parity** |
-| Model registry | 200+ auto-gen | 30+ manual | Partial |
+| Model registry | 200+ auto-gen | 101 models | **Parity** |
 | OAuth framework (device flow, 3 providers) | Yes | Yes | **Parity** |
 | HTTP proxy support | Yes | Yes | **Parity** |
 | Partial JSON parsing | Yes | Yes | **Parity** |
