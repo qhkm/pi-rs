@@ -1,9 +1,15 @@
 use anyhow::Result;
 use pi_agent_core::proxy::ProxyEvent;
 use pi_agent_core::{Agent, AgentEvent};
+use pi_ai::Message;
 
 /// Run in JSON mode: emit JSONL events to stdout
 pub async fn run_json_mode(agent: &Agent, prompt: &str) -> Result<()> {
+    run_json_mode_message(agent, Message::user(prompt)).await
+}
+
+/// Run in JSON mode with a fully constructed user message.
+pub async fn run_json_mode_message(agent: &Agent, message: Message) -> Result<()> {
     let mut rx = agent.subscribe();
 
     let printer = tokio::spawn(async move {
@@ -61,7 +67,7 @@ pub async fn run_json_mode(agent: &Agent, prompt: &str) -> Result<()> {
         }
     });
 
-    let result = agent.prompt(prompt).await;
+    let result = agent.prompt_message(message).await;
     let _ = printer.await;
 
     match result {

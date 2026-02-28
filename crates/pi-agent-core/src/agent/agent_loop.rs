@@ -6,8 +6,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use pi_ai::{
-    AssistantMessage, Content, Context, Message, SimpleStreamOptions, StreamEvent, StreamOptions,
-    ToolResultMessage,
+    AssistantMessage, Content, Context, Message, Model, SimpleStreamOptions, StreamEvent,
+    StreamOptions, ToolResultMessage,
 };
 
 use crate::context::compaction::{
@@ -28,16 +28,28 @@ pub struct Agent {
     pub shared: Arc<AgentSharedState>,
     /// Conversation messages (stored here so Agent owns them directly)
     messages: tokio::sync::RwLock<Vec<AgentMessage>>,
+    current_model: tokio::sync::RwLock<Model>,
+    model_cycle: tokio::sync::Mutex<Option<ModelCycleState>>,
     event_tx: broadcast::Sender<AgentEvent>,
+}
+
+#[derive(Debug, Clone)]
+struct ModelCycleState {
+    models: Vec<Model>,
+    next_index: usize,
+    started: bool,
 }
 
 impl Agent {
     pub fn new(config: AgentConfig) -> Self {
         let (event_tx, _) = broadcast::channel(4096);
+        let current_model = config.model.clone();
         Self {
             config,
             shared: Arc::new(AgentSharedState::new()),
             messages: tokio::sync::RwLock::new(Vec::new()),
+            current_model: tokio::sync::RwLock::new(current_model),
+            model_cycle: tokio::sync::Mutex::new(None),
             event_tx,
         }
     }
@@ -77,9 +89,43 @@ impl Agent {
         self.shared.tools.write().await.register(tool);
     }
 
+    /// Configure model cycling for user prompts.
+    ///
+    /// The first prompt uses `models[0]`, then subsequent prompts rotate through
+    /// the remaining entries in order and wrap around.
+    pub async fn configure_model_cycle(&self, models: Vec<Model>) {
+        if models.is_empty() {
+            return;
+        }
+
+        {
+            let mut current = self.current_model.write().await;
+            *current = models[0].clone();
+        }
+
+        let mut cycle = self.model_cycle.lock().await;
+        *cycle = if models.len() > 1 {
+            Some(ModelCycleState {
+                models,
+                next_index: 1,
+                started: false,
+            })
+        } else {
+            None
+        };
+    }
+
     /// Run the agent with a user prompt. This is the main entry point.
     /// Returns the final assistant message or an error.
     pub async fn prompt(&self, user_text: &str) -> Result<AssistantMessage> {
+        self.prompt_message(Message::user(user_text)).await
+    }
+
+    /// Run the agent with a full user message (supports multimodal content).
+    /// Returns the final assistant message or an error.
+    pub async fn prompt_message(&self, user_message: Message) -> Result<AssistantMessage> {
+        self.select_model_for_next_prompt().await;
+
         let agent_id = Uuid::new_v4().to_string();
         self.emit(AgentEvent::AgentStart {
             agent_id: agent_id.clone(),
@@ -87,7 +133,7 @@ impl Agent {
         self.reset_abort();
 
         // Add user message
-        let user_msg = AgentMessage::from_llm(Message::user(user_text));
+        let user_msg = AgentMessage::from_llm(user_message);
         self.messages.write().await.push(user_msg);
 
         let result = self.run_loop(&agent_id).await;
@@ -107,6 +153,28 @@ impl Agent {
         self.emit(AgentEvent::AgentEnd { agent_id, reason });
         *self.shared.state.write().await = final_state;
         result
+    }
+
+    async fn select_model_for_next_prompt(&self) {
+        let maybe_next_model = {
+            let mut cycle_guard = self.model_cycle.lock().await;
+            let Some(cycle) = cycle_guard.as_mut() else {
+                return;
+            };
+
+            if !cycle.started {
+                cycle.started = true;
+                None
+            } else {
+                let next = cycle.models[cycle.next_index].clone();
+                cycle.next_index = (cycle.next_index + 1) % cycle.models.len();
+                Some(next)
+            }
+        };
+
+        if let Some(next_model) = maybe_next_model {
+            *self.current_model.write().await = next_model;
+        }
     }
 
     /// The core agent loop
@@ -193,11 +261,7 @@ impl Agent {
                 if self.config.compaction.enabled {
                     let usage = self.context_usage().await;
                     let context_window = self.config.token_budget.context_window;
-                    if should_compact(
-                        usage.total_tokens,
-                        context_window,
-                        &self.config.compaction,
-                    ) {
+                    if should_compact(usage.total_tokens, context_window, &self.config.compaction) {
                         self.emit(AgentEvent::AutoCompaction);
                         match self.run_compaction().await {
                             Ok(result) => {
@@ -288,7 +352,7 @@ impl Agent {
 
         // Spawn the streaming task
         let provider = self.config.provider.clone();
-        let model = self.config.model.clone();
+        let model = self.current_model.read().await.clone();
         let context_clone = context.clone();
         let stream_handle = tokio::spawn(async move {
             provider
@@ -561,10 +625,8 @@ impl Agent {
             .iter()
             .map(|m| messages::estimate_tokens(m))
             .collect();
-        let split_idx = find_compaction_split(
-            &message_tokens,
-            self.config.compaction.keep_recent_tokens,
-        );
+        let split_idx =
+            find_compaction_split(&message_tokens, self.config.compaction.keep_recent_tokens);
 
         if split_idx == 0 {
             return Err(AgentError::Compaction(
@@ -607,10 +669,11 @@ impl Agent {
             ),
         });
 
+        let model = self.current_model.read().await.clone();
         let summary_msg = self
             .config
             .provider
-            .complete(&self.config.model, &summary_context, &options)
+            .complete(&model, &summary_context, &options)
             .await
             .map_err(|e| {
                 self.emit(AgentEvent::AutoCompactionEnd {

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use pi_agent_core::{Agent, AgentEvent};
+use pi_ai::{Content, Message};
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 use tokio::task::LocalSet;
 
 /// Run in interactive TUI mode
@@ -16,6 +18,15 @@ pub async fn run_interactive_mode(agent: &Agent) -> Result<()> {
 
 /// The main REPL loop
 async fn repl_loop(agent: &Agent) -> Result<()> {
+    let catalog = crate::skills::SkillCatalog::discover(Path::new(&agent.config.cwd))?;
+    let mut active_skills = crate::skills::ActiveSkills::default();
+    if !catalog.is_empty() {
+        println!(
+            "[skills loaded: {}] use /skills, /skill:list, /skill:<name>, /skill:clear",
+            catalog.len()
+        );
+    }
+
     loop {
         // Step 1: prompt the user for input
         print!("> ");
@@ -46,24 +57,83 @@ async fn repl_loop(agent: &Agent) -> Result<()> {
         if input.is_empty() {
             continue;
         }
+        if input == "/skills" || input == "/skill:list" {
+            print_skill_list(&catalog, &active_skills);
+            continue;
+        }
+        if input == "/skill:clear" {
+            active_skills.clear();
+            println!("[skills] cleared");
+            continue;
+        }
+        if let Some(name) = input.strip_prefix("/skill:") {
+            if name.trim().is_empty() {
+                println!("[skills] usage: /skill:<name> (or /skill:list)");
+                continue;
+            }
+            if let Some(skill) = catalog.get(name.trim()) {
+                active_skills.set(&skill.name);
+                println!("[skills] activated '{}'", skill.name);
+            } else {
+                println!("[skills] '{}' not found", name.trim());
+            }
+            continue;
+        }
 
         // Steps 2-6: subscribe, call prompt concurrently, handle events, print result
-        run_prompt_with_events(agent, &input).await?;
+        let processed =
+            crate::input::file_processor::process_input(&input, Path::new(&agent.config.cwd))?;
+        let prompt_text =
+            crate::skills::decorate_user_text(&processed.text, &catalog, &active_skills);
+        let mut blocks = Vec::new();
+        if !prompt_text.is_empty() {
+            blocks.push(Content::text(prompt_text));
+        }
+        blocks.extend(processed.images.iter().map(|img| img.to_content()));
+        if blocks.is_empty() {
+            continue;
+        }
+        run_prompt_with_events(agent, Message::user_with_images(blocks)).await?;
     }
 
     Ok(())
 }
 
+fn print_skill_list(catalog: &crate::skills::SkillCatalog, active: &crate::skills::ActiveSkills) {
+    if catalog.is_empty() {
+        println!("[skills] none found under ~/.pi/skills or .pi/skills");
+        return;
+    }
+
+    let active_names = active.list();
+    for name in catalog.names() {
+        let marker = if active_names.contains(&name) {
+            "*"
+        } else {
+            " "
+        };
+        if let Some(skill) = catalog.get(&name) {
+            println!(
+                "[{}] {} - {} ({})",
+                marker,
+                skill.name,
+                skill.description,
+                skill.path.display()
+            );
+        }
+    }
+}
+
 /// Subscribe to agent events, fire off agent.prompt() as a local task, and drive the
 /// event loop on the current task until the agent signals it is done.
-async fn run_prompt_with_events(agent: &Agent, input: &str) -> Result<()> {
+async fn run_prompt_with_events(agent: &Agent, input: Message) -> Result<()> {
     // Subscribe *before* spawning the prompt so we don't miss any early events
     let mut rx = agent.subscribe();
 
     // Spawn agent.prompt() as a local task (no Send requirement)
     // SAFETY: `agent` lives for the duration of this function.  The local task is
     // awaited (via the join handle) before we return, so the borrow is valid.
-    let input_owned = input.to_string();
+    let input_owned = input;
     let agent_ptr = agent as *const Agent;
     // Wrap the raw pointer in a newtype that asserts Send.  This is safe because:
     //   1. Agent is internally Arc-based with tokio primitives (all Send).
@@ -76,7 +146,7 @@ async fn run_prompt_with_events(agent: &Agent, input: &str) -> Result<()> {
     let prompt_handle = tokio::task::spawn_local(async move {
         // SAFETY: wrapped.0 was created from a valid &Agent that outlives this task.
         let a = unsafe { &*wrapped.0 };
-        a.prompt(&input_owned).await
+        a.prompt_message(input_owned).await
     });
 
     // Drive the event stream until the agent signals completion

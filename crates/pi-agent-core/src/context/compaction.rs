@@ -163,9 +163,7 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
                             } else {
                                 args_str
                             };
-                            lines.push(format!(
-                                "[Assistant] tool_call: {name}({args_display})"
-                            ));
+                            lines.push(format!("[Assistant] tool_call: {name}({args_display})"));
                         }
                         pi_ai::Content::Image { .. } => {
                             lines.push("[Assistant]: [image]".to_string());
@@ -319,8 +317,7 @@ mod tests {
 
     #[test]
     fn test_build_compaction_prompt_with_previous() {
-        let (sys, user) =
-            build_compaction_prompt("new conversation", Some("old summary here"));
+        let (sys, user) = build_compaction_prompt("new conversation", Some("old summary here"));
         assert!(sys.contains("conversation summarizer"));
         assert!(user.contains("<previous-summary>"));
         assert!(user.contains("old summary here"));

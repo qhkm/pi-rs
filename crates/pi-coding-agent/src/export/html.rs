@@ -15,12 +15,10 @@ pub async fn export_to_html(
     let title = session_name.unwrap_or("Pi Session Export");
     let html = render_html(messages, title);
 
-    let path = output_path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-            PathBuf::from(format!("session_export_{}.html", timestamp))
-        });
+    let path = output_path.map(PathBuf::from).unwrap_or_else(|| {
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        PathBuf::from(format!("session_export_{}.html", timestamp))
+    });
 
     tokio::fs::write(&path, html).await?;
     Ok(path)
@@ -189,9 +187,7 @@ fn escape_html(s: &str) -> String {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use pi_ai::{
-        Api, AssistantMessage, Provider, StopReason, Usage,
-    };
+    use pi_ai::{Api, AssistantMessage, Provider, StopReason, Usage};
 
     #[test]
     fn escape_html_encodes_special_chars() {
@@ -342,10 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn export_to_html_creates_file() {
-        let dir = std::env::temp_dir().join(format!(
-            "pi-rs-export-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir = std::env::temp_dir().join(format!("pi-rs-export-test-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir)
             .await
             .expect("create temp dir");
@@ -383,11 +376,7 @@ mod tests {
             .expect("export with defaults");
 
         assert!(result.exists());
-        let filename = result
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let filename = result.file_name().unwrap().to_str().unwrap();
         assert!(filename.starts_with("session_export_"));
         assert!(filename.ends_with(".html"));
 

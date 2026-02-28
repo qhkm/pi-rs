@@ -12,6 +12,10 @@ pub struct Args {
     #[arg(short, long)]
     pub model: Option<String>,
 
+    /// Comma-separated model cycle list (e.g. claude-sonnet-4-5,gpt-4.1)
+    #[arg(long, value_delimiter = ',')]
+    pub models: Vec<String>,
+
     /// API key (overrides env var)
     #[arg(long)]
     pub api_key: Option<String>,

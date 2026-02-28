@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type")]
 pub enum RpcCommand {
     #[serde(rename = "prompt")]
-    Prompt {
-        id: Option<String>,
-        message: String,
-    },
+    Prompt { id: Option<String>, message: String },
     #[serde(rename = "abort")]
     Abort { id: Option<String> },
     #[serde(rename = "get_state")]

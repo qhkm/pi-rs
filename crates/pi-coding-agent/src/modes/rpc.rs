@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use pi_agent_core::{Agent, AgentState};
+use pi_ai::{Content, Message};
+use std::path::Path;
 use tokio::task::LocalSet;
 
 use super::rpc_types::*;
@@ -59,7 +61,7 @@ async fn rpc_loop(agent: &Agent) -> Result<()> {
             let stdin = std::io::stdin();
             let mut buf = String::new();
             match stdin.lock().read_line(&mut buf) {
-                Ok(0) => None,  // EOF
+                Ok(0) => None, // EOF
                 Ok(_) => Some(buf),
                 Err(_) => None,
             }
@@ -81,11 +83,8 @@ async fn rpc_loop(agent: &Agent) -> Result<()> {
                 handle_command(agent, &command, &is_prompting).await;
             }
             Err(e) => {
-                let response = RpcResponse::error(
-                    None,
-                    "parse",
-                    &format!("Failed to parse command: {e}"),
-                );
+                let response =
+                    RpcResponse::error(None, "parse", &format!("Failed to parse command: {e}"));
                 if let Ok(json) = serde_json::to_string(&response) {
                     println!("{}", json);
                 }
@@ -117,7 +116,29 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
                 is_prompting.store(true, Ordering::SeqCst);
 
                 // Spawn the prompt as a local task so we keep reading stdin.
-                let message = message.clone();
+                let processed = match crate::input::file_processor::process_input(
+                    message,
+                    Path::new(&agent.config.cwd),
+                ) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        return print_response(RpcResponse::error(
+                            id,
+                            cmd_type,
+                            &format!("Failed to process input: {e}"),
+                        ));
+                    }
+                };
+                let mut blocks = Vec::new();
+                if !processed.text.is_empty() {
+                    blocks.push(Content::text(processed.text));
+                }
+                blocks.extend(processed.images.iter().map(|img| img.to_content()));
+                let input_message = if blocks.is_empty() {
+                    Message::user("")
+                } else {
+                    Message::user_with_images(blocks)
+                };
                 let flag = is_prompting.clone();
 
                 // SAFETY: `agent` is owned by the caller and lives for the entire
@@ -130,7 +151,7 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
 
                 tokio::task::spawn_local(async move {
                     let a = unsafe { &*wrapped.0 };
-                    if let Err(e) = a.prompt(&message).await {
+                    if let Err(e) = a.prompt_message(input_message).await {
                         // Prompt errors are already emitted as AgentEnd events,
                         // but log to stderr for debugging.
                         eprintln!("[rpc] prompt error: {e}");
@@ -171,7 +192,8 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
         }
 
         RpcCommand::Compact {
-            custom_instructions, ..
+            custom_instructions,
+            ..
         } => {
             // TODO: Wire to compaction when full compaction plumbing is in place.
             let _ = custom_instructions;
@@ -185,6 +207,10 @@ async fn handle_command(agent: &Agent, command: &RpcCommand, is_prompting: &Arc<
         }
     };
 
+    print_response(response);
+}
+
+fn print_response(response: RpcResponse) {
     if let Ok(json) = serde_json::to_string(&response) {
         println!("{}", json);
     }

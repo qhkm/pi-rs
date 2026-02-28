@@ -6,6 +6,7 @@ use std::sync::Arc;
 use pi_agent_core::context::budget::TokenBudget;
 use pi_agent_core::context::compaction::CompactionSettings;
 use pi_agent_core::{Agent, AgentConfig};
+use pi_ai::{Content, Message};
 use pi_coding_agent::cli::Args;
 use pi_coding_agent::session::SessionManager;
 use pi_coding_agent::tools::operations::LocalFileOps;
@@ -26,9 +27,8 @@ async fn main() -> Result<()> {
     let cwd = std::env::current_dir()?.display().to_string();
 
     // Load context files (.pi/, AGENTS.md, CLAUDE.md, SYSTEM.md)
-    let loaded_context = pi_coding_agent::context::resource_loader::load_context(
-        std::path::Path::new(&cwd),
-    )?;
+    let loaded_context =
+        pi_coding_agent::context::resource_loader::load_context(std::path::Path::new(&cwd))?;
 
     let default_prompt = "You are a helpful AI coding assistant. You have access to tools for reading, writing, and editing files, running bash commands, and searching code.";
 
@@ -38,9 +38,16 @@ async fn main() -> Result<()> {
         default_prompt,
     );
 
-    // Resolve provider and model
+    // Resolve provider and model(s)
     let provider_name = args.provider.as_deref().unwrap_or("anthropic");
-    let model_name = args.model.as_deref().unwrap_or("claude-sonnet-4-5");
+    let model_ids: Vec<String> = if !args.models.is_empty() {
+        args.models.clone()
+    } else {
+        vec![args
+            .model
+            .clone()
+            .unwrap_or_else(|| "claude-sonnet-4-5".to_string())]
+    };
 
     // Register default providers
     pi_ai::register_defaults();
@@ -52,9 +59,13 @@ async fn main() -> Result<()> {
         )
     })?;
 
-    let model = pi_ai::find_model(model_name)
-        .ok_or_else(|| anyhow::anyhow!("Model '{}' not found", model_name))?
-        .clone();
+    let mut resolved_models = Vec::new();
+    for model_id in &model_ids {
+        let model = pi_ai::find_model(model_id)
+            .ok_or_else(|| anyhow::anyhow!("Model '{}' not found", model_id))?;
+        resolved_models.push(model);
+    }
+    let model = resolved_models[0].clone();
 
     // Parse thinking level
     let thinking_level = args.thinking.as_deref().map(|s| match s {
@@ -78,6 +89,9 @@ async fn main() -> Result<()> {
     };
 
     let agent = Agent::new(config);
+    if resolved_models.len() > 1 {
+        agent.configure_model_cycle(resolved_models).await;
+    }
 
     // Register built-in tools
     let ops: Arc<dyn pi_coding_agent::tools::FileOperations> = Arc::new(LocalFileOps);
@@ -115,19 +129,34 @@ async fn main() -> Result<()> {
     let raw_prompt = args.messages.join(" ");
 
     // Process @file references in CLI prompt (expand text files, extract images)
-    let processed =
-        pi_coding_agent::input::file_processor::process_input(&raw_prompt, std::path::Path::new(&cwd))?;
+    let processed = pi_coding_agent::input::file_processor::process_input(
+        &raw_prompt,
+        std::path::Path::new(&cwd),
+    )?;
     let prompt = processed.text;
-    // TODO: pass processed.images when vision is wired into providers
+    let mut user_blocks: Vec<Content> = Vec::new();
+    if !prompt.is_empty() {
+        user_blocks.push(Content::text(prompt.clone()));
+    }
+    user_blocks.extend(processed.images.iter().map(|img| img.to_content()));
+    let initial_message = if user_blocks.is_empty() {
+        Message::user("")
+    } else {
+        Message::user_with_images(user_blocks)
+    };
+    let has_initial_input = !prompt.is_empty() || !processed.images.is_empty();
 
-    if args.print && !prompt.is_empty() {
+    if args.print && has_initial_input {
         let baseline = agent.messages().await.len();
-        let mode_result = pi_coding_agent::modes::print::run_print_mode(&agent, &prompt).await;
+        let mode_result =
+            pi_coding_agent::modes::print::run_print_mode_message(&agent, initial_message.clone())
+                .await;
         persist_new_messages(&mut session_manager, &agent, baseline).await?;
         mode_result?;
-    } else if args.mode == "json" && !prompt.is_empty() {
+    } else if args.mode == "json" && has_initial_input {
         let baseline = agent.messages().await.len();
-        let mode_result = pi_coding_agent::modes::json::run_json_mode(&agent, &prompt).await;
+        let mode_result =
+            pi_coding_agent::modes::json::run_json_mode_message(&agent, initial_message).await;
         persist_new_messages(&mut session_manager, &agent, baseline).await?;
         mode_result?;
     } else if args.mode == "rpc" {

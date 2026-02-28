@@ -110,11 +110,7 @@ pub fn build_system_prompt(
 
     // AGENTS.md / CLAUDE.md content
     for (path, content) in &loaded.agents_files {
-        parts.push(format!(
-            "\n# Context from {}\n{}",
-            path.display(),
-            content
-        ));
+        parts.push(format!("\n# Context from {}\n{}", path.display(), content));
     }
 
     // APPEND_SYSTEM.md
@@ -263,7 +259,10 @@ mod tests {
     fn test_build_system_prompt_full_assembly() {
         let ctx = LoadedContext {
             agents_files: vec![
-                (PathBuf::from("/global/AGENTS.md"), "global rules".to_string()),
+                (
+                    PathBuf::from("/global/AGENTS.md"),
+                    "global rules".to_string(),
+                ),
                 (
                     PathBuf::from("/project/CLAUDE.md"),
                     "project rules".to_string(),
@@ -322,17 +321,10 @@ mod tests {
         let pi_dir = tmp.path().join(".pi");
         fs::create_dir_all(&pi_dir).unwrap();
         fs::write(pi_dir.join("SYSTEM.md"), "custom system prompt").unwrap();
-        fs::write(
-            pi_dir.join("APPEND_SYSTEM.md"),
-            "appended instructions",
-        )
-        .unwrap();
+        fs::write(pi_dir.join("APPEND_SYSTEM.md"), "appended instructions").unwrap();
 
         let ctx = load_context(tmp.path()).unwrap();
-        assert_eq!(
-            ctx.system_prompt.as_deref(),
-            Some("custom system prompt")
-        );
+        assert_eq!(ctx.system_prompt.as_deref(), Some("custom system prompt"));
         assert_eq!(
             ctx.append_system_prompt.as_deref(),
             Some("appended instructions")

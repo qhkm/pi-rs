@@ -213,8 +213,7 @@ mod tests {
         match content {
             pi_ai::Content::Image { data, mime_type } => {
                 use base64::Engine;
-                let expected =
-                    base64::engine::general_purpose::STANDARD.encode(b"test image data");
+                let expected = base64::engine::general_purpose::STANDARD.encode(b"test image data");
                 assert_eq!(data, expected);
                 assert_eq!(mime_type, "image/png");
             }

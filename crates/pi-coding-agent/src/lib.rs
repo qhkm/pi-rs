@@ -6,4 +6,5 @@ pub mod extensions;
 pub mod input;
 pub mod modes;
 pub mod session;
+pub mod skills;
 pub mod tools;

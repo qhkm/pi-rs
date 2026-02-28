@@ -249,9 +249,7 @@ impl SessionManager {
             // Keep the new session ID
             obj.insert(
                 "id".to_string(),
-                serde_json::Value::String(
-                    self.session_id.as_ref().unwrap().clone(),
-                ),
+                serde_json::Value::String(self.session_id.as_ref().unwrap().clone()),
             );
         }
         fork_lines[0] = serde_json::to_string(&header)?;
@@ -723,10 +721,7 @@ mod tests {
             .expect("third message");
 
         // Fork at the second message
-        let forked_path = manager
-            .fork(&id2, "/tmp/work")
-            .await
-            .expect("fork session");
+        let forked_path = manager.fork(&id2, "/tmp/work").await.expect("fork session");
 
         // The forked session file should exist and differ from the original
         assert!(forked_path.exists());
