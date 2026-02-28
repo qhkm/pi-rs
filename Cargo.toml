@@ -1,0 +1,107 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pi-ai",
+    "crates/pi-agent-core",
+    "crates/pi-tui",
+    "crates/pi-coding-agent",
+    "crates/pi-mom",
+    "crates/pi-web-ui",
+    "crates/pi-pods",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# Logging/Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async traits
+async-trait = "0.1"
+
+# Stream combinators
+futures = "0.3"
+
+# UUID
+uuid = { version = "1.6", features = ["v4"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Base64
+base64 = "0.22"
+
+# Regex
+regex = "1.10"
+
+# Glob
+glob = "0.3"
+
+# Terminal
+crossterm = "0.28"
+
+# Bit flags
+bitflags = "2.4"
+
+# Unicode
+unicode-width = "0.2"
+unicode-segmentation = "1.10"
+
+# Syntax highlighting
+syntect = "5.2"
+
+# Markdown parsing
+pulldown-cmark = "0.12"
+
+# JSON Schema
+schemars = "0.8"
+jsonschema = "0.26"
+
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+
+# SSH
+russh = "0.46"
+russh-keys = "0.46"
+
+# Slack
+slack-morphism = { version = "2.3", features = ["hyper"] }
+
+# WASM (optional)
+wasm-bindgen = "0.2"
+web-sys = "0.3"
+js-sys = "0.3"
+
+# Internal crates
+pi-ai = { path = "crates/pi-ai" }
+pi-agent-core = { path = "crates/pi-agent-core" }
+pi-tui = { path = "crates/pi-tui" }
+pi-coding-agent = { path = "crates/pi-coding-agent" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

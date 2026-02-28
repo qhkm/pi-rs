@@ -1,0 +1,29 @@
+[package]
+name = "pi-pods"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPU pod manager for vLLM deployments"
+
+[[bin]]
+name = "pi-pods"
+path = "src/main.rs"
+
+[dependencies]
+pi-agent-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+dirs-next = "2.0"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
