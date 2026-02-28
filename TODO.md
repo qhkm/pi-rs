@@ -195,11 +195,11 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
 - [ ] **Ollama provider** — OpenAI-compatible but local, model management
 - [ ] **vLLM provider** — OpenAI-compatible with custom model paths
 - [ ] **OpenAI Responses API** — new streaming format (different from Chat Completions)
-- [ ] **Retry/backoff decorator** — exponential backoff with jitter for rate limits
+- [x] **Retry/backoff decorator** — exponential backoff with jitter for rate limits
 - [ ] **Fallback provider decorator** — circuit breaker pattern, primary→secondary failover
-- [ ] **Vision provider wiring** — wire image Content through Anthropic/OpenAI/Google request builders (types + @file extraction done)
+- [x] **Vision provider wiring** — wire image Content through Anthropic/OpenAI/Google request builders
 - [ ] **OAuth flows** — CLI login for Claude Pro/Max, ChatGPT Plus, Google
-- [ ] **Prompt caching** — explicit cache control headers (Anthropic)
+- [x] **Prompt caching** — explicit cache control headers (Anthropic)
 - [ ] **Model auto-discovery** — runtime model listing from provider APIs
 - [ ] **Batch API support** — async batch processing
 - [ ] Integration tests against real provider APIs (behind `live-tests` feature flag)
@@ -247,8 +247,8 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
   - [x] Basic stdio JSON-RPC request/response execution path
   - [ ] Multi-message streaming protocol + robust lifecycle management
 - [ ] **Custom commands** — register/execute extension commands
-- [ ] **Event hooks** — session_start, message_end, tool_execution_start, etc.
-- [ ] **Prompt templates** — load reusable snippets from `~/.pi/agent/prompts/`
+- [x] **Event hooks** — HookRegistry with 8 event types, before/after dispatch
+- [x] **Prompt templates** — PromptRegistry with frontmatter parsing, variable expansion
 - [ ] **Skills system** — discover SKILL.md files, convert to tools
   - [x] Discover `SKILL.md` from `~/.pi/skills` and `.pi/skills`
   - [x] Parse basic frontmatter (`name`, `description`)
@@ -257,7 +257,7 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
   - [x] Local skill installation workflow (`/skill:install <path>`)
   - [ ] Remote/registry-based skill package installation
 - [ ] **Themes** — configurable color schemes for TUI and markdown
-- [ ] **Model cycling** — `--models` flag for switching between models
+- [x] **Model cycling** — `--models` flag for switching between models
 - [ ] **Share** — generate shareable session URL
 
 ### pi-mom
@@ -336,13 +336,13 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
 
 ## Stats
 
-| Crate | Files | Lines | Tests |
-|-------|-------|-------|-------|
-| pi-ai | 22 | 4,893 | 22 |
-| pi-tui | 20 | 4,212 | 11 |
-| pi-agent-core | 15 | 1,451 | 2 |
-| pi-coding-agent | 24 | 2,491 | 19 |
-| pi-mom | 10 | 307 | 0 |
-| pi-web-ui | 5 | 94 | 0 |
-| pi-pods | 10 | 336 | 0 |
-| **Total** | **106** | **~13,800** | **56** |
+| Crate | Tests |
+|-------|-------|
+| pi-ai | 69 |
+| pi-tui | 11 |
+| pi-agent-core | 23 |
+| pi-coding-agent | 151 |
+| pi-mom | 0 |
+| pi-web-ui | 0 |
+| pi-pods | 0 |
+| **Total** | **265** |

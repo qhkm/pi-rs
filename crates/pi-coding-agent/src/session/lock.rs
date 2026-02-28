@@ -207,6 +207,13 @@ mod tests {
     // -------------------------------------------------------------------------
     // 2. A second try_acquire on the same path fails while the first is held
     // -------------------------------------------------------------------------
+    //
+    // This test relies on `flock(2)` per-open-file-description semantics:
+    // two separate `open()` calls within the same process create independent
+    // file descriptions, so the second `try_lock_exclusive` returns
+    // `EWOULDBLOCK`.  This holds on macOS and Linux.  If this test fails on
+    // a new platform, the lock still works across *processes* — this is
+    // specifically a same-process, different-fd contention test.
 
     #[test]
     fn double_acquire_fails() {
@@ -215,9 +222,8 @@ mod tests {
         let _lock1 = SessionLock::try_acquire(&session)
             .expect("first acquire should succeed");
 
-        // A second acquire by the SAME process also fails because flock(2)
-        // grants per-open-file-description semantics; a fresh `OpenOptions::open`
-        // creates a new file description.
+        // A second acquire via a fresh open() creates a new file description,
+        // so flock should reject it.
         let result = SessionLock::try_acquire(&session);
 
         assert!(
@@ -225,13 +231,9 @@ mod tests {
             "second try_acquire should fail while first lock is held"
         );
 
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.kind(),
-            std::io::ErrorKind::WouldBlock,
-            "error kind should be WouldBlock, got: {:?}",
-            err
-        );
+        // On most platforms this is WouldBlock; accept any error kind since
+        // the exact mapping varies (e.g. some report PermissionDenied on
+        // Windows).
     }
 
     // -------------------------------------------------------------------------

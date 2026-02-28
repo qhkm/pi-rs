@@ -2,7 +2,7 @@
 
 > Generated: 2026-03-01 | pi-rs: 15.5K lines, 103 tests | pi-mono: 128K lines, 100+ test files
 
-## Overall Parity: ~55%
+## Overall Parity: ~70%
 
 ---
 
@@ -18,7 +18,7 @@
 
 ## Feature-by-Feature Parity
 
-### 1. AI Providers (`pi-ai`) — 45%
+### 1. AI Providers (`pi-ai`) — 60%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -41,17 +41,18 @@
 | Streaming (SSE) | Yes | Yes | **Parity** |
 | Tool calling | Yes | Yes | **Parity** |
 | Extended thinking (5 levels) | Yes | Yes | **Parity** |
-| Vision/image input | Yes | Types only | Partial |
-| Prompt caching | Yes | No | Missing |
+| Vision/image input | Yes | Yes (wired) | **Parity** |
+| Prompt caching | Yes | Yes (Anthropic) | **Parity** |
 | Cost tracking | Yes | Yes | **Parity** |
 | Model registry | 200+ auto-gen | 30+ manual | Partial |
 | OAuth framework (7 providers) | Yes | No | Missing |
-| HTTP proxy support | Yes | No | Missing |
-| Partial JSON parsing | Yes | No | Missing |
+| HTTP proxy support | Yes | Yes | **Parity** |
+| Partial JSON parsing | Yes | Yes | **Parity** |
+| Retry/backoff decorator | Yes | Yes | **Parity** |
 
 ---
 
-### 2. Agent Core (`pi-agent-core`) — 78%
+### 2. Agent Core (`pi-agent-core`) — 92%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -68,45 +69,45 @@
 | Token budget tracking | Yes | Yes | **Parity** |
 | Abort handling | Yes | Yes | **Parity** |
 | Max-turns enforcement | Yes | Yes | **Parity** |
-| Context transformation hooks | Yes | No | Missing |
+| Context transformation hooks | Yes | Yes | **Parity** |
 | Custom message types | Yes | No | Missing |
-| API key per-request override | Yes | No | Missing |
-| Thinking budgets per-level | Yes | No | Missing |
+| API key per-request override | Yes | Yes | **Parity** |
+| Thinking budgets per-level | Yes | Yes | **Parity** |
+| Model cycling | Yes | Yes | **Parity** |
 | ProxyEvent transport | Yes | Yes | **Parity** |
 
 ---
 
-### 3. Tools (`pi-coding-agent/tools`) — 80%
+### 3. Tools (`pi-coding-agent/tools`) — 95%
 
 | Tool | pi-mono | pi-rs | Status |
 |------|---------|-------|--------|
 | Read (offset, limit, truncation) | Yes | Yes | **Parity** |
 | Write (mkdir -p) | Yes | Yes | **Parity** |
-| Edit (string replace) | Full diff | Basic replace | Partial |
+| Edit (string replace + diff) | Full diff | String replace + unified diff | **Parity** |
 | Bash (timeout, abort, env) | Yes | Yes | **Parity** |
 | Grep (regex, glob, context) | Yes | Yes | **Parity** |
 | Find (glob, ignore rules) | Yes | Yes | **Parity** |
 | Ls (sizes, sorting) | Yes | Yes | **Parity** |
-| Smart truncation util | Yes | No | Missing |
-| Edit-diff mode | Yes | No | Missing |
+| Smart truncation util | Yes | Yes | **Parity** |
 | Path security (traversal) | Yes | Yes | **Parity** |
 | FileOperations abstraction | Yes | Yes | **Parity** |
 
 ---
 
-### 4. Modes — 45%
+### 4. Modes — 75%
 
 | Mode | pi-mono | pi-rs | Status |
 |------|---------|-------|--------|
 | Interactive (full TUI) | Full (146KB) | Basic REPL | ~15% |
 | Print mode | Yes | Yes | **Parity** |
 | JSON mode | Yes | Yes | **Parity** |
-| RPC mode (JSON-RPC) | Full protocol | Core protocol | ~70% |
-| SDK mode (programmatic) | Yes | No | Missing |
+| RPC mode (JSON-RPC) | Full protocol | Full protocol | **Parity** |
+| SDK mode (programmatic) | Yes | Yes | **Parity** |
 
 ---
 
-### 5. Session Management — 55%
+### 5. Session Management — 80%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -114,16 +115,17 @@
 | Session resume | Yes | Yes | **Parity** |
 | Session branching | Yes | Yes | **Parity** |
 | Session forking | Yes | Yes | **Parity** |
-| Tree navigation | Yes | No | Missing |
+| Tree navigation | Yes | Yes | **Parity** |
 | Session merging | Yes | No | Missing |
-| HTML export | Full + ANSI-to-HTML | Basic | ~70% |
+| HTML export | Full + ANSI-to-HTML | Full + ANSI-to-HTML | **Parity** |
 | Session metadata/tags | Yes | Basic | Partial |
 | Schema migrations | Yes | No | Missing |
-| Concurrent session safety | Yes | No | Missing |
+| Concurrent session safety | Yes | Yes (fs2 locks) | **Parity** |
+| Branch summarization | Yes | Yes | **Parity** |
 
 ---
 
-### 6. Context & Configuration — 60%
+### 6. Context & Configuration — 90%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -133,21 +135,20 @@
 | @file expansion | Yes | Yes | **Parity** |
 | @image detection + base64 | Yes | Yes | **Parity** |
 | System prompt assembly | Yes | Yes | **Parity** |
-| Settings hierarchy (project>user) | Deep merge | No | Missing |
-| Settings persistence | Yes | No | Missing |
-| Compaction settings | Yes | Basic | Partial |
-| Branch summarization | Yes | No | Missing |
+| Settings hierarchy (project>user) | Deep merge | Deep merge | **Parity** |
+| Settings persistence | Yes | Yes | **Parity** |
+| Compaction settings | Yes | Yes | **Parity** |
 
 ---
 
-### 7. Extension & Plugin System — 45%
+### 7. Extension & Plugin System — 60%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
 | Extension types/manifest | 45KB types | Basic types | ~10% |
 | Extension loader (npm/local) | Yes | Local directories + JSON manifests | Partial |
-| Extension runner (hooks) | Yes | No | Missing |
-| Hook system (before/after turn) | Yes | No | Missing |
+| Extension runner (hooks) | Yes | Yes (HookRegistry) | **Parity** |
+| Hook system (before/after turn) | Yes | Yes (8 event types) | **Parity** |
 | Tool registration via extension | Yes | Shell tools | Partial |
 | Binary plugin executor | Yes | Basic JSON-RPC stdio | Partial |
 | Command registration | Yes | No | Missing |
@@ -219,45 +220,45 @@
 
 | Area | Weight | Parity | Weighted |
 |------|--------|--------|----------|
-| AI Providers | 15% | 45% | 6.8% |
-| Agent Core | 20% | 78% | 15.6% |
-| Tools | 10% | 80% | 8.0% |
-| Modes | 10% | 45% | 4.5% |
-| Session Management | 8% | 55% | 4.4% |
-| Context & Config | 7% | 60% | 4.2% |
-| Extensions/Plugins | 8% | 45% | 3.6% |
+| AI Providers | 15% | 60% | 9.0% |
+| Agent Core | 20% | 92% | 18.4% |
+| Tools | 10% | 95% | 9.5% |
+| Modes | 10% | 75% | 7.5% |
+| Session Management | 8% | 80% | 6.4% |
+| Context & Config | 7% | 90% | 6.3% |
+| Extensions/Plugins | 8% | 60% | 4.8% |
 | Skills | 5% | 70% | 3.5% |
 | Interactive TUI | 10% | 25% | 2.5% |
 | Authentication | 4% | 30% | 1.2% |
 | Peripheral (mom/pods/web) | 3% | 12% | 0.4% |
-| **Total** | **100%** | — | **54.7%** |
+| **Total** | **100%** | — | **69.5%** |
 
 ---
 
 ## Strength & Gap Analysis
 
-### Strongest Areas (70%+)
-- Agent core loop, state machine, events
-- Tool suite (7/7 tools implemented)
-- Context compaction + auto-compaction
-- Streaming infrastructure
-- Session persistence + branching
+### Strongest Areas (80%+)
+- Agent core loop, state machine, events, context transforms (92%)
+- Tool suite (7/7 tools + smart truncation + diff mode) (95%)
+- Context & configuration (settings hierarchy, compaction, branch summaries) (90%)
+- Session management (tree nav, locks, ANSI-to-HTML export) (80%)
+- Modes (interactive, print, JSON, RPC, SDK) (75%)
 
 ### Biggest Gaps
 1. **Interactive TUI app layer** (25%) — Framework exists, application UI missing
-2. **Extensions/plugins** (45%) — Local loader + shell/binary tools landed; hooks/commands/WASM missing
-3. **OAuth** (0%) — No OAuth flows for any provider
-4. **Cloud providers** — Bedrock, Vertex, Azure all missing
-5. **Modes (SDK + richer RPC/UI)** — Core modes exist, but SDK mode and richer interactive protocol are missing
+2. **AI providers** (60%) — Missing Bedrock, Vertex, Azure; no OAuth
+3. **Extensions/plugins** (60%) — Hooks landed; WASM executor, commands, UI hooks missing
+4. **Authentication** (30%) — No OAuth flows for any provider
+5. **Peripheral crates** (12%) — pi-mom, pi-pods, pi-web-ui are stubs
 
 ### Top 5 Items to Close the Gap Fastest
 
 | Priority | Item | Estimated Impact |
 |----------|------|-----------------|
 | 1 | Interactive TUI application layer (streaming display, selectors, slash commands) | +7% |
-| 2 | Extension/plugin system (hooks, commands, WASM executor) | +3% |
+| 2 | Cloud providers (Bedrock, Vertex, Azure) | +4% |
 | 3 | OAuth framework (token storage, refresh, provider flows) | +3% |
-| 4 | Cloud providers (Bedrock, Vertex, Azure) | +4% |
-| 5 | Rich interactive mode features (streaming UI, selectors, slash UX) | +3% |
+| 4 | Extension system completion (WASM executor, commands, UI hooks) | +2% |
+| 5 | Prompt templates + advanced skills (registry install, remote packages) | +1% |
 
-Completing all 5 would bring parity from **~55% to ~75%**.
+Completing all 5 would bring parity from **~70% to ~87%**.

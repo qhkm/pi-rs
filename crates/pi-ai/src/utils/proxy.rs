@@ -54,11 +54,25 @@ pub fn build_http_client(timeout_secs: u64) -> reqwest::Client {
 /// This is exposed as a separate function so tests and specialised code-paths
 /// can compose it with their own builder configuration.
 pub fn configure_proxy(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let no_proxy = env_var_nonempty(&["NO_PROXY", "no_proxy"]);
+    let no_proxy_filter = no_proxy
+        .as_deref()
+        .map(reqwest::NoProxy::from_string);
+
+    if let Some(ref val) = no_proxy {
+        debug!(no_proxy = %val, "NO_PROXY configured");
+    }
+
     // ── HTTPS proxy ──────────────────────────────────────────────────────────
     if let Some(url) = env_var_nonempty(&["HTTPS_PROXY", "https_proxy"]) {
         match reqwest::Proxy::https(&url) {
             Ok(proxy) => {
                 debug!(proxy_url = %url, "HTTPS proxy configured");
+                let proxy = if let Some(ref np) = no_proxy_filter {
+                    proxy.no_proxy(np.clone())
+                } else {
+                    proxy
+                };
                 builder = builder.proxy(proxy);
             }
             Err(e) => {
@@ -72,6 +86,11 @@ pub fn configure_proxy(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBu
         match reqwest::Proxy::http(&url) {
             Ok(proxy) => {
                 debug!(proxy_url = %url, "HTTP proxy configured");
+                let proxy = if let Some(ref np) = no_proxy_filter {
+                    proxy.no_proxy(np.clone())
+                } else {
+                    proxy
+                };
                 builder = builder.proxy(proxy);
             }
             Err(e) => {
@@ -85,33 +104,17 @@ pub fn configure_proxy(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBu
         match reqwest::Proxy::all(&url) {
             Ok(proxy) => {
                 debug!(proxy_url = %url, "ALL proxy configured");
+                let proxy = if let Some(ref np) = no_proxy_filter {
+                    proxy.no_proxy(np.clone())
+                } else {
+                    proxy
+                };
                 builder = builder.proxy(proxy);
             }
             Err(e) => {
                 tracing::warn!(proxy_url = %url, error = %e, "invalid ALL_PROXY URL, ignoring");
             }
         }
-    }
-
-    // ── NO_PROXY ─────────────────────────────────────────────────────────────
-    // reqwest accepts a comma-separated list of hostnames / CIDR ranges that
-    // should bypass the proxy.  We pass the raw string through unchanged so
-    // that the standard curl-compatible syntax is honoured (e.g.
-    // `NO_PROXY=localhost,127.0.0.1,.internal.corp`).
-    //
-    // Note: there is no dedicated `reqwest::NoProxy` builder method — instead
-    // reqwest reads `no_proxy` / `NO_PROXY` via the `Proxy::custom` path.
-    // The simplest compliant approach is to call `reqwest::Proxy::custom` on
-    // the matching schemes and handle the no-proxy filter there.  For
-    // compatibility we instead rely on reqwest's built-in env-proxy support
-    // which _does_ honour `NO_PROXY` when proxies were explicitly set above.
-    //
-    // If you need fine-grained no-proxy logic, set it on the individual
-    // `reqwest::Proxy` via `.no_proxy(reqwest::NoProxy::from_env())`.
-    if let Some(no_proxy_val) = env_var_nonempty(&["NO_PROXY", "no_proxy"]) {
-        debug!(no_proxy = %no_proxy_val, "NO_PROXY configured (handled by reqwest proxy filter)");
-        // Re-emit the proxies with the no_proxy filter applied.
-        builder = apply_no_proxy(builder, &no_proxy_val);
     }
 
     builder
@@ -132,50 +135,23 @@ fn env_var_nonempty(names: &[&str]) -> Option<String> {
     None
 }
 
-/// Re-create proxy entries with a `NoProxy` filter derived from `no_proxy_str`.
-///
-/// reqwest's `Proxy::no_proxy` method accepts a `reqwest::NoProxy` which can
-/// be built from a comma-separated list of bypass patterns — the same format
-/// used by curl and most UNIX tools.
-fn apply_no_proxy(mut builder: reqwest::ClientBuilder, no_proxy_str: &str) -> reqwest::ClientBuilder {
-    let no_proxy = reqwest::NoProxy::from_string(no_proxy_str);
-
-    // HTTPS proxy with no_proxy filter.
-    if let Some(url) = env_var_nonempty(&["HTTPS_PROXY", "https_proxy"]) {
-        if let Ok(proxy) = reqwest::Proxy::https(&url) {
-            builder = builder.proxy(proxy.no_proxy(no_proxy.clone()));
-        }
-    }
-
-    // HTTP proxy with no_proxy filter.
-    if let Some(url) = env_var_nonempty(&["HTTP_PROXY", "http_proxy"]) {
-        if let Ok(proxy) = reqwest::Proxy::http(&url) {
-            builder = builder.proxy(proxy.no_proxy(no_proxy.clone()));
-        }
-    }
-
-    // ALL_PROXY with no_proxy filter.
-    if let Some(url) = env_var_nonempty(&["ALL_PROXY", "all_proxy"]) {
-        if let Ok(proxy) = reqwest::Proxy::all(&url) {
-            builder = builder.proxy(proxy.no_proxy(no_proxy.clone()));
-        }
-    }
-
-    builder
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Global mutex to serialise proxy tests.  Environment variables are
+    /// process-global, so concurrent test threads that modify them would race.
+    /// All tests in this module lock `ENV_MUTEX` before touching env vars.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     /// A plain client (no proxy env vars set) must build successfully.
     /// This exercises the TLS initialisation path.
     #[test]
     fn client_builds_without_proxy_env() {
-        // Temporarily clear any proxy vars that might be set in the test
-        // environment so this test is deterministic.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::clear(&[
             "HTTPS_PROXY", "https_proxy",
             "HTTP_PROXY",  "http_proxy",
@@ -184,14 +160,13 @@ mod tests {
         ]);
 
         let client = build_http_client(30);
-        // The fact that we reach this line means `.build()` did not panic.
-        // We perform a trivial assertion to prevent the binding being dropped.
         drop(client);
     }
 
     /// When `HTTPS_PROXY` is set to a valid URL the builder should not panic.
     #[test]
     fn client_builds_with_https_proxy() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("HTTPS_PROXY", "http://proxy.example.com:3128");
 
         let client = build_http_client(30);
@@ -201,6 +176,7 @@ mod tests {
     /// When `HTTP_PROXY` is set to a valid URL the builder should not panic.
     #[test]
     fn client_builds_with_http_proxy() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("HTTP_PROXY", "http://proxy.example.com:8080");
 
         let client = build_http_client(30);
@@ -210,6 +186,7 @@ mod tests {
     /// When `ALL_PROXY` is set to a valid URL the builder should not panic.
     #[test]
     fn client_builds_with_all_proxy() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("ALL_PROXY", "http://proxy.example.com:1080");
 
         let client = build_http_client(30);
@@ -220,9 +197,9 @@ mod tests {
     /// instead and the client still builds (without a proxy).
     #[test]
     fn client_builds_with_invalid_proxy_url() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("HTTPS_PROXY", "not-a-valid-url!!!");
 
-        // Should not panic.
         let client = build_http_client(30);
         drop(client);
     }
@@ -230,6 +207,7 @@ mod tests {
     /// An empty proxy env var is treated as "not set".
     #[test]
     fn empty_proxy_env_var_is_ignored() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::set("HTTPS_PROXY", "");
 
         let client = build_http_client(30);
@@ -239,6 +217,7 @@ mod tests {
     /// configure_proxy can be used to compose additional builder options.
     #[test]
     fn configure_proxy_returns_builder_for_chaining() {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::clear(&[
             "HTTPS_PROXY", "https_proxy",
             "HTTP_PROXY",  "http_proxy",
@@ -258,8 +237,8 @@ mod tests {
 
     /// RAII guard that restores environment variables when dropped.
     ///
-    /// This prevents individual tests from polluting the environment for other
-    /// tests in the same process (cargo runs tests in parallel by default).
+    /// **Must** be used together with `ENV_MUTEX` to prevent races between
+    /// tests that run on different threads in the same process.
     struct EnvGuard {
         vars: Vec<(String, Option<String>)>,
     }
@@ -268,7 +247,8 @@ mod tests {
         /// Set a single environment variable, restoring its original value on drop.
         fn set(key: &str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
-            // Safety: test-only, single-threaded env manipulation.
+            // Safety: caller holds ENV_MUTEX, so no other test thread is
+            // reading/writing env vars concurrently.
             unsafe { std::env::set_var(key, value) };
             EnvGuard {
                 vars: vec![(key.to_string(), previous)],
@@ -281,7 +261,7 @@ mod tests {
                 .iter()
                 .map(|k| {
                     let prev = std::env::var(k).ok();
-                    // Safety: test-only.
+                    // Safety: caller holds ENV_MUTEX.
                     unsafe { std::env::remove_var(k) };
                     (k.to_string(), prev)
                 })
@@ -294,7 +274,7 @@ mod tests {
         fn drop(&mut self) {
             for (key, maybe_val) in &self.vars {
                 match maybe_val {
-                    // Safety: test-only.
+                    // Safety: caller holds ENV_MUTEX (guard dropped before mutex).
                     Some(v) => unsafe { std::env::set_var(key, v) },
                     None => unsafe { std::env::remove_var(key) },
                 }
