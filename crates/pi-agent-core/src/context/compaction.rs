@@ -318,8 +318,14 @@ pub fn find_compaction_split(message_tokens: &[u64], keep_recent_tokens: u64) ->
 pub fn build_compaction_prompt(
     messages_text: &str,
     previous_summary: Option<&str>,
+    custom_instructions: Option<&str>,
 ) -> (String, String) {
-    let system_prompt = SUMMARIZATION_SYSTEM_PROMPT.to_string();
+    let mut system_prompt = SUMMARIZATION_SYSTEM_PROMPT.to_string();
+
+    if let Some(instructions) = custom_instructions {
+        system_prompt.push_str("\n\nAdditional instructions:\n");
+        system_prompt.push_str(instructions);
+    }
 
     let user_prompt = match previous_summary {
         Some(prev) => UPDATE_SUMMARIZATION_PROMPT
@@ -410,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_build_compaction_prompt_initial() {
-        let (sys, user) = build_compaction_prompt("some conversation", None);
+        let (sys, user) = build_compaction_prompt("some conversation", None, None);
         assert!(sys.contains("conversation summarizer"));
         assert!(user.contains("<conversation>"));
         assert!(user.contains("some conversation"));
@@ -420,13 +426,29 @@ mod tests {
 
     #[test]
     fn test_build_compaction_prompt_with_previous() {
-        let (sys, user) = build_compaction_prompt("new conversation", Some("old summary here"));
+        let (sys, user) =
+            build_compaction_prompt("new conversation", Some("old summary here"), None);
         assert!(sys.contains("conversation summarizer"));
         assert!(user.contains("<previous-summary>"));
         assert!(user.contains("old summary here"));
         assert!(user.contains("</previous-summary>"));
         assert!(user.contains("<conversation>"));
         assert!(user.contains("new conversation"));
+    }
+
+    #[test]
+    fn test_build_compaction_prompt_with_custom_instructions() {
+        let (sys, user) = build_compaction_prompt(
+            "some conversation",
+            None,
+            Some("Focus on errors"),
+        );
+        assert!(sys.contains("conversation summarizer"));
+        assert!(
+            sys.contains("Focus on errors"),
+            "custom instructions should appear in system prompt"
+        );
+        assert!(user.contains("some conversation"));
     }
 
     // ─── Branch summarization tests ──────────────────────────────────────────

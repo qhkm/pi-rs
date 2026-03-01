@@ -1,6 +1,8 @@
 use crate::components::traits::{Component, Focusable, InputResult, CURSOR_MARKER};
 use crate::keyboard::keybindings::{EditorAction, KeybindingsManager};
 use crate::keyboard::kitty::{parse_input, Key, KeyEventType, Modifiers};
+use syntect::highlighting::{Theme, ThemeSet};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 #[derive(Debug, Clone)]
 pub struct Selection {
@@ -35,7 +37,6 @@ pub struct Editor {
     scroll_top: usize,
     scroll_left: usize,
     height: u16,
-    #[allow(dead_code)]
     language: String,
     focused: bool,
     dirty: bool,
@@ -51,10 +52,26 @@ pub struct Editor {
     newline_key: EditorAction,
     pub on_submit: Option<Box<dyn Fn(&str) + Send>>,
     pub on_escape: Option<Box<dyn Fn() + Send>>,
+    // Syntax highlighting
+    syntax_set: SyntaxSet,
+    theme: Theme,
+    syntax: Option<SyntaxReference>,
 }
 
 impl Editor {
     pub fn new(height: u16) -> Self {
+        let syntax_set = SyntaxSet::load_defaults_newlines();
+        let theme = ThemeSet::load_defaults()
+            .themes
+            .remove("base16-ocean.dark")
+            .unwrap_or_else(|| {
+                ThemeSet::load_defaults()
+                    .themes
+                    .into_values()
+                    .next()
+                    .expect("syntect must have at least one default theme")
+            });
+
         Self {
             lines: vec![String::new()],
             cursor_line: 0,
@@ -75,11 +92,19 @@ impl Editor {
             newline_key: EditorAction::NewLine,
             on_submit: None,
             on_escape: None,
+            syntax_set,
+            theme,
+            syntax: None,
         }
     }
 
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
-        self.language = language.into();
+        let lang = language.into();
+        self.syntax = self
+            .syntax_set
+            .find_syntax_by_token(&lang)
+            .cloned();
+        self.language = lang;
         self
     }
 
@@ -397,6 +422,30 @@ impl Component for Editor {
         let visible_rows = self.height as usize;
         let visible_cols = width as usize;
 
+        // If a syntax is set, use syntect to highlight lines
+        // Pre-compute highlighted spans for visible lines when syntax is set.
+        // Each inner Vec contains (Style, String) pairs for one line.
+        let highlighted: Option<Vec<Vec<(syntect::highlighting::Style, String)>>> =
+            self.syntax.as_ref().map(|syntax| {
+                use syntect::easy::HighlightLines;
+                let mut h = HighlightLines::new(syntax, &self.theme);
+                let end = (self.scroll_top + visible_rows).min(self.lines.len());
+                let mut visible_styles = Vec::new();
+                for (i, line) in self.lines[..end].iter().enumerate() {
+                    let line_with_nl = format!("{line}\n");
+                    let spans: Vec<(syntect::highlighting::Style, String)> = h
+                        .highlight_line(&line_with_nl, &self.syntax_set)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(style, text)| (style, text.to_string()))
+                        .collect();
+                    if i >= self.scroll_top {
+                        visible_styles.push(spans);
+                    }
+                }
+                visible_styles
+            });
+
         for row_idx in 0..visible_rows {
             let line_idx = self.scroll_top + row_idx;
             let line = match self.lines.get(line_idx) {
@@ -415,6 +464,70 @@ impl Component for Editor {
             };
 
             let mut rendered = String::new();
+
+            if let Some(ref hl) = highlighted {
+                if let Some(spans) = hl.get(row_idx) {
+                    // Render with ANSI 24-bit color codes
+                    let mut col_width = 0usize;
+                    let mut byte_offset = 0usize;
+                    let mut span_byte_pos = 0usize; // position within the full line+\n
+
+                    for (style, text) in spans.iter() {
+                        for ch in text.chars() {
+                            if ch == '\n' {
+                                span_byte_pos += 1;
+                                continue;
+                            }
+
+                            // Skip chars before scroll_left
+                            if span_byte_pos < self.scroll_left {
+                                span_byte_pos += ch.len_utf8();
+                                continue;
+                            }
+
+                            let cw =
+                                unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+
+                            // Insert cursor marker
+                            if self.focused
+                                && line_idx == self.cursor_line
+                                && self.scroll_left + byte_offset == self.cursor_col
+                            {
+                                rendered.push_str(CURSOR_MARKER);
+                            }
+
+                            if col_width + cw > visible_cols {
+                                break;
+                            }
+
+                            let fg = style.foreground;
+                            rendered.push_str(&format!(
+                                "\x1b[38;2;{};{};{}m{}",
+                                fg.r, fg.g, fg.b, ch
+                            ));
+                            col_width += cw;
+                            byte_offset += ch.len_utf8();
+                            span_byte_pos += ch.len_utf8();
+                        }
+                    }
+
+                    // Reset color after the line
+                    rendered.push_str("\x1b[0m");
+
+                    // Cursor at end of line
+                    if self.focused
+                        && line_idx == self.cursor_line
+                        && self.cursor_col >= self.scroll_left + byte_offset
+                    {
+                        rendered.push_str(CURSOR_MARKER);
+                    }
+
+                    result.push(rendered);
+                    continue;
+                }
+            }
+
+            // Fallback: plain text rendering (no syntax highlighting)
             let mut col_width = 0usize;
             let mut byte_offset = 0usize;
 
@@ -671,5 +784,58 @@ impl Focusable for Editor {
     fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
         self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlighted_output_contains_ansi_codes() {
+        let mut editor = Editor::new(5).with_language("rs");
+        editor.set_value("fn main() {\n    println!(\"hello\");\n}");
+
+        let rendered = editor.render(80);
+        let joined = rendered.join("\n");
+        assert!(
+            joined.contains("\x1b[38;2;"),
+            "highlighted output should contain ANSI 24-bit color codes"
+        );
+        assert!(
+            joined.contains("\x1b[0m"),
+            "highlighted output should contain ANSI reset"
+        );
+    }
+
+    #[test]
+    fn plain_text_has_no_ansi() {
+        let mut editor = Editor::new(3);
+        // No language set — should render plain text
+        editor.set_value("hello world");
+
+        let rendered = editor.render(40);
+        let joined = rendered.join("\n");
+        assert!(
+            !joined.contains("\x1b[38;2;"),
+            "plain text should not have ANSI color codes"
+        );
+    }
+
+    #[test]
+    fn cursor_position_preserved_with_highlighting() {
+        let mut editor = Editor::new(3).with_language("rs");
+        editor.set_focused(true);
+        editor.set_value("let x = 42;");
+        // Cursor is at end after set_value — move it to position 0
+        editor.cursor_line = 0;
+        editor.cursor_col = 0;
+
+        let rendered = editor.render(80);
+        let joined = rendered.join("\n");
+        assert!(
+            joined.contains(CURSOR_MARKER),
+            "cursor marker must be present in highlighted output"
+        );
     }
 }

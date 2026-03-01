@@ -189,13 +189,6 @@ async fn handle_command(agent: &Arc<Agent>, command: &RpcCommand, is_prompting: 
             custom_instructions,
             ..
         } => {
-            // custom_instructions are reserved for future use (e.g. injecting extra
-            // guidance into the summarisation prompt). The underlying run_compaction
-            // call does not yet accept them, so we log and ignore for now.
-            if let Some(ref extra) = custom_instructions {
-                eprintln!("[rpc] compact: custom_instructions not yet forwarded: {extra}");
-            }
-
             // Reject if a prompt is already running — compacting mid-stream is unsafe.
             if is_prompting.load(Ordering::SeqCst) {
                 return print_response(RpcResponse::error(
@@ -205,7 +198,7 @@ async fn handle_command(agent: &Arc<Agent>, command: &RpcCommand, is_prompting: 
                 ));
             }
 
-            match agent.run_compaction().await {
+            match agent.run_compaction(custom_instructions.as_deref()).await {
                 Ok(result) => {
                     let payload = RpcCompactionResult {
                         tokens_before: result.tokens_before,

@@ -403,7 +403,7 @@ impl Agent {
                     let context_window = self.config.token_budget.context_window;
                     if should_compact(usage.total_tokens, context_window, &self.config.compaction) {
                         self.emit(AgentEvent::AutoCompaction);
-                        match self.run_compaction().await {
+                        match self.run_compaction(None).await {
                             Ok(result) => {
                                 tracing::info!(
                                     tokens_before = result.tokens_before,
@@ -861,11 +861,14 @@ impl Agent {
     ///
     /// This is safe to call externally (e.g. from an RPC handler) while the agent
     /// is idle. The caller is responsible for ensuring no concurrent prompt is running.
-    pub async fn run_compaction(&self) -> Result<CompactionResult> {
+    pub async fn run_compaction(
+        &self,
+        custom_instructions: Option<&str>,
+    ) -> Result<CompactionResult> {
         let previous_state = *self.shared.state.read().await;
         *self.shared.state.write().await = AgentState::Compacting;
 
-        let result = self.run_compaction_inner().await;
+        let result = self.run_compaction_inner(custom_instructions).await;
 
         // Restore previous state (or Idle on success)
         *self.shared.state.write().await = if result.is_ok() {
@@ -879,7 +882,10 @@ impl Agent {
 
     /// Inner implementation of compaction, separated so state management
     /// can happen in the outer wrapper regardless of errors.
-    async fn run_compaction_inner(&self) -> Result<CompactionResult> {
+    async fn run_compaction_inner(
+        &self,
+        custom_instructions: Option<&str>,
+    ) -> Result<CompactionResult> {
         let messages = self.messages.read().await;
         let llm_messages = messages::to_llm_messages(&messages);
 
@@ -915,7 +921,7 @@ impl Agent {
 
         // Build compaction prompt
         let (system_prompt, user_prompt) =
-            build_compaction_prompt(&conversation_text, previous_summary.as_deref());
+            build_compaction_prompt(&conversation_text, previous_summary.as_deref(), custom_instructions);
 
         // Call LLM for summarization using the non-streaming complete() method
         let summary_context =
@@ -1051,7 +1057,7 @@ impl Agent {
     /// Get estimated context usage
     pub async fn context_usage(&self) -> ContextUsage {
         let msgs = self.messages.read().await;
-        let total_tokens: u64 = msgs.iter().map(|m| messages::estimate_tokens(m)).sum();
+        let message_tokens: u64 = msgs.iter().map(|m| messages::estimate_tokens(m)).sum();
         let system_tokens = self
             .config
             .system_prompt
@@ -1059,6 +1065,18 @@ impl Agent {
             .map(|s| (s.len() as u64) / 4)
             .unwrap_or(0);
 
+        // Estimate tool definition tokens from active tool schemas
+        let tools_guard = self.shared.tools.read().await;
+        let tool_tokens: u64 = tools_guard
+            .active_tool_definitions()
+            .iter()
+            .map(|t| {
+                (t.name.len() + t.description.len() + t.parameters.to_string().len()) as u64 / 4
+            })
+            .sum();
+        drop(tools_guard);
+
+        let total_tokens = message_tokens + system_tokens + tool_tokens;
         let available = self.config.token_budget.available_for_context();
         let usage_percent = if available > 0 {
             (total_tokens as f64 / available as f64) * 100.0
@@ -1067,10 +1085,10 @@ impl Agent {
         };
 
         ContextUsage {
-            total_tokens: total_tokens + system_tokens,
+            total_tokens,
             system_tokens,
-            message_tokens: total_tokens,
-            tool_tokens: 0, // TODO: estimate tool definition tokens
+            message_tokens,
+            tool_tokens,
             message_count: msgs.len(),
             usage_percent,
         }
@@ -1573,5 +1591,77 @@ mod tests {
             "cycle_model_prev should return None for a single-model cycle"
         );
         assert_eq!(agent.current_model_name().await, "only-model");
+    }
+
+    // ── Test 10: context_usage includes tool_tokens ──────────────────────────
+
+    /// A minimal tool implementation used only for context_usage token estimation.
+    struct DummyTool {
+        tool_name: String,
+        desc: String,
+        schema: serde_json::Value,
+    }
+
+    #[async_trait]
+    impl crate::tools::traits::AgentTool for DummyTool {
+        fn name(&self) -> &str {
+            &self.tool_name
+        }
+        fn description(&self) -> &str {
+            &self.desc
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            self.schema.clone()
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &crate::tools::traits::ToolContext,
+        ) -> crate::Result<crate::tools::traits::ToolResult> {
+            unimplemented!()
+        }
+        fn clone_boxed(&self) -> Box<dyn crate::tools::traits::AgentTool> {
+            Box::new(DummyTool {
+                tool_name: self.tool_name.clone(),
+                desc: self.desc.clone(),
+                schema: self.schema.clone(),
+            })
+        }
+    }
+
+    /// Verifies that registering tools increases `tool_tokens` in `context_usage`.
+    #[tokio::test]
+    async fn context_usage_includes_tool_tokens() {
+        use serde_json::json;
+
+        let agent = make_agent();
+
+        // Before registering any tool, tool_tokens should be 0.
+        let usage = agent.context_usage().await;
+        assert_eq!(usage.tool_tokens, 0, "no tools → zero tool_tokens");
+
+        // Register a tool with known sizes.
+        let name = "read_file"; // 9 bytes
+        let desc = "Read a file from the filesystem"; // 31 bytes
+        let schema = json!({"type": "object", "properties": {"path": {"type": "string"}}}); // serialised length varies
+        let schema_len = schema.to_string().len();
+
+        let tool = Arc::new(DummyTool {
+            tool_name: name.to_string(),
+            desc: desc.to_string(),
+            schema: schema.clone(),
+        });
+        agent.register_tool(tool).await;
+
+        let usage = agent.context_usage().await;
+        let expected = (name.len() + desc.len() + schema_len) as u64 / 4;
+        assert_eq!(
+            usage.tool_tokens, expected,
+            "tool_tokens should reflect registered tool sizes"
+        );
+        assert!(
+            usage.total_tokens >= usage.tool_tokens,
+            "total must include tool_tokens"
+        );
     }
 }
