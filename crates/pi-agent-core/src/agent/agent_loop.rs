@@ -185,6 +185,18 @@ impl Agent {
         self.config.provider = Some(provider);
     }
 
+    /// Update the model at runtime.
+    ///
+    /// This should be called together with update_provider when switching
+    /// to a different provider that uses different models.
+    pub fn update_model(&mut self, model: Model) {
+        self.config.model = model.clone();
+        // Also update the current_model field
+        if let Ok(mut current) = self.current_model.try_write() {
+            *current = model;
+        }
+    }
+
     /// Register a tool
     pub async fn register_tool(&self, tool: Arc<dyn crate::tools::traits::AgentTool>) {
         self.shared.tools.write().await.register(tool);

@@ -181,13 +181,18 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
                         };
                         pi_ai::register_provider(&api_key, new_provider.clone());
                         
-                        // Try to update the agent's provider
+                        // Try to update the agent's provider and model
                         if let Some(agent_mut) = Arc::get_mut(&mut agent) {
                             agent_mut.update_provider(new_provider);
-                            println!("[auth] provider '{}' activated and ready to use", detected);
+                            // Also update to an appropriate default model for this provider
+                            let default_model = get_default_model_for_provider(detected);
+                            let model_id = default_model.id.clone();
+                            agent_mut.update_model(default_model);
+                            println!("[auth] provider '{}' activated with model '{}'", detected, model_id);
                         } else {
                             println!("[auth] provider '{}' registered. New conversations will use it.", detected);
-                            println!("[auth] (active conversation still uses previous provider)");
+                            println!("[auth] (restart with: pi --provider {} --model <model-id>)", detected);
+                            println!("[auth] suggested model: {}", get_default_model_for_provider(detected).id);
                         }
                     }
                     Err(e) => {
@@ -536,4 +541,91 @@ fn create_provider(provider_name: &str, api_key: &str) -> Result<std::sync::Arc<
     };
 
     Ok(provider_arc)
+}
+
+/// Get a default model for a provider
+fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
+    use pi_ai::messages::types::{Api, Provider};
+    use pi_ai::models::registry::{InputType, ModelCost};
+    
+    match provider {
+        "anthropic" => pi_ai::Model {
+            id: "claude-sonnet-4-5".to_string(),
+            name: "Claude Sonnet 4.5".to_string(),
+            api: Api::AnthropicMessages,
+            provider: Provider::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            reasoning: true,
+            input_types: vec![InputType::Text, InputType::Image],
+            cost: ModelCost { input: 3.0, output: 15.0, cache_read: 0.0, cache_write: 0.0 },
+            context_window: 200000,
+            max_tokens: 8192,
+            headers: None,
+        },
+        "openai" => pi_ai::Model {
+            id: "gpt-4o".to_string(),
+            name: "GPT-4o".to_string(),
+            api: Api::OpenAICompletions,
+            provider: Provider::OpenAI,
+            base_url: "https://api.openai.com".to_string(),
+            reasoning: false,
+            input_types: vec![InputType::Text, InputType::Image],
+            cost: ModelCost { input: 2.5, output: 10.0, cache_read: 0.0, cache_write: 0.0 },
+            context_window: 128000,
+            max_tokens: 4096,
+            headers: None,
+        },
+        "google" => pi_ai::Model {
+            id: "gemini-2.5-pro".to_string(),
+            name: "Gemini 2.5 Pro".to_string(),
+            api: Api::GoogleGenerativeAI,
+            provider: Provider::Google,
+            base_url: "https://generativelanguage.googleapis.com".to_string(),
+            reasoning: true,
+            input_types: vec![InputType::Text, InputType::Image],
+            cost: ModelCost { input: 1.25, output: 10.0, cache_read: 0.0, cache_write: 0.0 },
+            context_window: 1000000,
+            max_tokens: 8192,
+            headers: None,
+        },
+        "groq" => pi_ai::Model {
+            id: "llama-3.3-70b".to_string(),
+            name: "Llama 3.3 70B".to_string(),
+            api: Api::OpenAICompletions,
+            provider: Provider::Groq,
+            base_url: "https://api.groq.com/openai/v1".to_string(),
+            reasoning: false,
+            input_types: vec![InputType::Text],
+            cost: ModelCost { input: 0.59, output: 0.79, cache_read: 0.0, cache_write: 0.0 },
+            context_window: 128000,
+            max_tokens: 4096,
+            headers: None,
+        },
+        "openrouter" => pi_ai::Model {
+            id: "anthropic/claude-3.5-sonnet".to_string(),
+            name: "Claude 3.5 Sonnet (via OpenRouter)".to_string(),
+            api: Api::OpenAICompletions,
+            provider: Provider::OpenRouter,
+            base_url: "https://openrouter.ai/api/v1".to_string(),
+            reasoning: true,
+            input_types: vec![InputType::Text, InputType::Image],
+            cost: ModelCost { input: 3.0, output: 15.0, cache_read: 0.0, cache_write: 0.0 },
+            context_window: 200000,
+            max_tokens: 8192,
+            headers: None,
+        },
+        _ => pi_ai::Model {
+            id: "unknown".to_string(),
+            name: "Unknown".to_string(),
+            api: Api::OpenAICompletions,
+            provider: Provider::Custom("unknown".to_string()),
+            base_url: "https://api.openai.com".to_string(),
+            reasoning: false,
+            input_types: vec![InputType::Text],
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
+            context_window: 128000,
+            max_tokens: 4096,
+            headers: None,
+        },
+    }
 }
