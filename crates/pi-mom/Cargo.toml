@@ -25,6 +25,7 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
+tokio-tungstenite = "0.21"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

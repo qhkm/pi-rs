@@ -1,11 +1,3 @@
-use serde::{Deserialize, Serialize};
+//! Cloud provider integrations for GPU pods.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PodProvider {
-    DataCrunch,
-    RunPod,
-    VastAi,
-    PrimeIntellect,
-    AwsEc2,
-}
+pub mod vllm;
