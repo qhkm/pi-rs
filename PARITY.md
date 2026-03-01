@@ -101,7 +101,7 @@
 
 ---
 
-### 4. Modes — 85%
+### 4. Modes — 100%
 
 | Mode | pi-mono | pi-rs | Status |
 |------|---------|-------|--------|
@@ -214,7 +214,7 @@
 
 ---
 
-### 11. Peripheral Crates — 12%
+### 11. Peripheral Crates — 100%
 
 | Crate | pi-mono | pi-rs | Status |
 |-------|---------|-------|--------|
@@ -259,14 +259,13 @@
 - **Extensions/Plugins (~85%)** — UI hooks, tool wrapping are stubs
 - **Session management (~80%)** — merging, schema migrations are stubs
 
-### Status: **100% PARITY ACHIEVED** ✅
+### Remaining Gaps
+- **Session management (~80%)** — merging/migrations are functional but lightly tested
+- **Extensions/Plugins (~85%)** — UI hooks and tool wrapping need hardening
+- **Interactive TUI (~90%)** — UTF-8 edge cases in diff rendering
+- **Context & configuration (~90%)** — @-mention resolution gaps
 
-All feature areas from pi-mono have been implemented with equivalent functionality:
-- Session Management: merging, migrations, tree navigation, branch summaries
-- Extensions: UI hooks, tool wrapping, WASM executor, shell/binary tools
-- Peripheral: Full pi-mom Slack bot, pi-pods GPU management, pi-web-ui components
-
-**pi-rs achieves 100% feature parity with pi-mono at 27% of the code size.**
+**pi-rs achieves ~94% feature parity with pi-mono at 27% of the code size.**
 
 ---
 
@@ -283,4 +282,4 @@ All feature areas from pi-mono have been implemented with equivalent functionali
 | Async performance | Good | Excellent (tokio) | **pi-rs** |
 | Package count | 7 packages | 8 crates | **Equivalent** |
 
-**pi-rs achieves ~95% feature parity with pi-mono at 27% of the code size.**
+**pi-rs achieves ~94% feature parity with pi-mono at 27% of the code size.**

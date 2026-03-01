@@ -104,7 +104,11 @@ pub fn delete_session(session_id: &str) -> anyhow::Result<()> {
     storage::Storage::delete(session_id)
 }
 
-/// Web UI configuration
+/// Web UI configuration.
+///
+/// **Security note**: API keys are stored in a JSON file with restrictive
+/// file permissions (0600 on Unix). This is suitable for single-user desktop
+/// use; for server deployments, use environment variables instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfig {
     pub default_provider: String,

@@ -85,16 +85,24 @@ impl Storage {
         Ok(data)
     }
 
-    /// Save session data
+    /// Save session data.
+    ///
+    /// Writes to a temporary file first then atomically renames to prevent
+    /// data corruption from concurrent writers or crashes mid-write.
     fn save_data(&self, data: &SessionData) -> Result<()> {
         let path = self.storage_path();
-        
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let content = serde_json::to_string_pretty(data)?;
-        std::fs::write(&path, content)?;
+
+        // Write to temp file then atomically rename
+        let tmp_path = path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &content)?;
+        std::fs::rename(&tmp_path, &path)?;
+
         Ok(())
     }
 
@@ -121,8 +129,9 @@ impl Storage {
         // Update preview (first 100 chars of last user message)
         if role == "user" {
             let preview = message.text_content();
-            data.metadata.preview = if preview.len() > 100 {
-                format!("{}...", &preview[..100])
+            data.metadata.preview = if preview.chars().count() > 100 {
+                let truncated: String = preview.chars().take(100).collect();
+                format!("{}...", truncated)
             } else {
                 preview
             };
@@ -132,17 +141,22 @@ impl Storage {
         Ok(())
     }
 
-    /// Get all messages
+    /// Get all messages.
+    ///
+    /// Note: assistant and tool-result messages are reconstructed as user
+    /// messages with a role prefix since `AssistantMessage` requires provider
+    /// metadata that is not stored.
     pub fn get_messages(&self) -> Result<Vec<Message>> {
         let data = self.load_data()?;
-        
+
         let messages: Vec<Message> = data
             .messages
             .into_iter()
             .map(|m| {
                 match m.role.as_str() {
                     "user" => Message::user(m.content),
-                    _ => Message::user(format!("[assistant] {}", m.content)), // Simplified
+                    "assistant" => Message::user(format!("[{}] {}", m.role, m.content)),
+                    _ => Message::user(format!("[{}] {}", m.role, m.content)),
                 }
             })
             .collect();
@@ -240,7 +254,10 @@ impl Storage {
         Ok(config)
     }
 
-    /// Save global config
+    /// Save global config.
+    ///
+    /// On Unix, sets file permissions to 0600 (owner-only) since the config
+    /// may contain API keys.
     pub fn save_config<T: serde::Serialize>(config: &T) -> Result<()> {
         let path = dirs_next::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -253,7 +270,16 @@ impl Storage {
         }
 
         let content = serde_json::to_string_pretty(config)?;
-        std::fs::write(&path, content)?;
+        std::fs::write(&path, &content)?;
+
+        // Restrict file permissions on Unix (0600 = owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(&path, perms)?;
+        }
+
         Ok(())
     }
 }

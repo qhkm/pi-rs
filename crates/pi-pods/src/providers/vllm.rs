@@ -24,7 +24,7 @@ impl VllmManager {
         // In production, this would check if the port is actually free
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 "python3 -c 'import socket; s=socket.socket(); s.bind((\"\", 0)); print(s.getsockname()[1]); s.close()'",
             ])
@@ -36,6 +36,15 @@ impl VllmManager {
         port_str.trim().parse().context("Invalid port number")
     }
 
+    /// Validate that a string is safe to embed in a shell command.
+    /// Rejects shell meta-characters.
+    fn validate_shell_arg(s: &str, label: &str) -> Result<()> {
+        if s.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '\'' | '"' | '(' | ')' | '{' | '}' | '<' | '>' | '\n' | '\r' | ' ')) {
+            anyhow::bail!("{} contains invalid characters: {}", label, s);
+        }
+        Ok(())
+    }
+
     /// Start a vLLM model
     pub async fn start_model(
         &self,
@@ -45,6 +54,12 @@ impl VllmManager {
         _memory: Option<&str>,
         context: Option<&str>,
     ) -> Result<u32> {
+        // Sanitize inputs to prevent shell injection
+        Self::validate_shell_arg(model, "model name")?;
+        if let Some(ctx) = context {
+            Self::validate_shell_arg(ctx, "context length")?;
+        }
+
         let gpu_str = gpus.iter()
             .map(|g| g.to_string())
             .collect::<Vec<_>>()
@@ -75,7 +90,7 @@ impl VllmManager {
 
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 &cmd,
             ])
@@ -92,7 +107,7 @@ impl VllmManager {
         // Verify the process is running
         let check = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 &format!("ps -p {} > /dev/null && echo 'running' || echo 'not running'", pid),
             ])
@@ -113,7 +128,7 @@ impl VllmManager {
     pub async fn stop_model(&self, pid: u32) -> Result<()> {
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 &format!("kill {} 2>/dev/null || kill -9 {} 2>/dev/null || true", pid, pid),
             ])
@@ -125,7 +140,7 @@ impl VllmManager {
         for _ in 0..10 {
             let check = Command::new("ssh")
                 .args(&[
-                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "StrictHostKeyChecking=accept-new",
                     &self.ssh_target,
                     &format!("ps -p {} > /dev/null 2>&1 && echo 'running' || echo 'stopped'", pid),
                 ])
@@ -143,13 +158,39 @@ impl VllmManager {
         anyhow::bail!("Failed to stop vLLM process {}", pid);
     }
 
-    /// Get logs for a running model
+    /// Get logs for a running model by its PID.
+    ///
+    /// Uses `lsof` to find the actual log file opened by the process, falling
+    /// back to the port-based naming convention.
     pub async fn get_logs(&self, pid: u32) -> Result<String> {
+        // Try to find the log file associated with this PID via /proc fd links,
+        // falling back to the port-based naming convention
+        let cmd = format!(
+            "readlink -f /proc/{pid}/fd/1 2>/dev/null || ls -t /tmp/vllm-*.log 2>/dev/null | head -1"
+        );
+        let log_file_output = Command::new("ssh")
+            .args(&[
+                "-o", "StrictHostKeyChecking=accept-new",
+                &self.ssh_target,
+                &cmd,
+            ])
+            .output()
+            .await
+            .context("Failed to find log file")?;
+
+        let log_file = String::from_utf8_lossy(&log_file_output.stdout).trim().to_string();
+
+        let cat_cmd = if log_file.is_empty() || log_file.contains("No such file") {
+            "echo 'No logs found'".to_string()
+        } else {
+            format!("tail -n 500 {}", log_file.replace(|c: char| !c.is_ascii_alphanumeric() && c != '/' && c != '-' && c != '_' && c != '.', ""))
+        };
+
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
-                &format!("cat /tmp/vllm-*.log 2>/dev/null || echo 'No logs found'"),
+                &cat_cmd,
             ])
             .output()
             .await
@@ -162,7 +203,7 @@ impl VllmManager {
     pub async fn health_check(&self, port: u16) -> Result<bool> {
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 &format!("curl -sf http://localhost:{}/health || echo 'unhealthy'", port),
             ])

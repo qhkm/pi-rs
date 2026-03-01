@@ -491,10 +491,11 @@ fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
 
 /// Truncate a line to fit within max_width.
 fn truncate_line(line: &str, max_width: usize) -> String {
-    if line.len() <= max_width {
+    if line.chars().count() <= max_width {
         line.to_string()
     } else {
-        format!("{}…", &line[..max_width.saturating_sub(1)])
+        let truncated: String = line.chars().take(max_width.saturating_sub(1)).collect();
+        format!("{}…", truncated)
     }
 }
 

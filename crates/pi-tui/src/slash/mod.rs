@@ -327,8 +327,8 @@ pub enum CommandResult {
     Info(String),
 }
 
-/// Handler for slash commands.
-pub trait CommandHandler {
+/// Handler for slash commands in the TUI.
+pub trait SlashCommandHandler {
     /// Handle a parsed command and return the result.
     fn handle(&mut self, cmd: &SlashCommand) -> CommandResult;
 }
@@ -410,7 +410,7 @@ impl Default for SimpleCommandHandler {
     }
 }
 
-impl CommandHandler for SimpleCommandHandler {
+impl SlashCommandHandler for SimpleCommandHandler {
     fn handle(&mut self, cmd: &SlashCommand) -> CommandResult {
         match cmd.name.as_str() {
             "help" | "h" => {

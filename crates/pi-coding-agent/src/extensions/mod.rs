@@ -177,18 +177,20 @@ impl CommandHandler for ExtensionCommandHandler {
         
         let script_path = self.extension_path.join("commands").join(format!("{}.sh", command_name));
         
-        // Ensure the resolved path is within the extension directory
-        let canonical_script = script_path.canonicalize().ok();
-        let canonical_ext = self.extension_path.canonicalize().ok();
-        
-        if let (Some(script), Some(ext)) = (&canonical_script, &canonical_ext) {
-            if !script.starts_with(ext) {
-                anyhow::bail!("Command script escapes extension directory");
-            }
-        }
-        
+        // Verify the script exists before canonicalizing
         if !script_path.exists() {
             anyhow::bail!("Command script not found: {}", script_path.display());
+        }
+
+        // Ensure the resolved path is within the extension directory.
+        // Both paths MUST canonicalize successfully — if either fails, reject.
+        let canonical_script = script_path.canonicalize()
+            .with_context(|| format!("Failed to resolve script path: {}", script_path.display()))?;
+        let canonical_ext = self.extension_path.canonicalize()
+            .with_context(|| format!("Failed to resolve extension path: {}", self.extension_path.display()))?;
+
+        if !canonical_script.starts_with(&canonical_ext) {
+            anyhow::bail!("Command script escapes extension directory");
         }
         
         let output = std::process::Command::new("bash")

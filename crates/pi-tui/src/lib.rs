@@ -60,7 +60,7 @@ pub use theme::{
 };
 
 pub use slash::{
-    complete_command, CommandDef, CommandHandler, CommandResult, SimpleCommandHandler,
+    complete_command, CommandDef, SlashCommandHandler, CommandResult, SimpleCommandHandler,
     SlashCommand, SlashCommandRegistry,
 };
 

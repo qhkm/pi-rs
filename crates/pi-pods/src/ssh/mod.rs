@@ -9,10 +9,21 @@ pub struct SshClient {
 }
 
 impl SshClient {
-    /// Create a new SSH client
+    /// Create a new SSH client.
+    ///
+    /// Validates that the connection string looks like a plausible SSH target
+    /// (e.g. `user@host`, `ssh://user@host:port`).
     pub fn new(connection_string: &str) -> Result<Self> {
+        let s = connection_string.trim();
+        if s.is_empty() {
+            anyhow::bail!("SSH connection string is empty");
+        }
+        // Reject shell meta-characters to prevent injection
+        if s.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '\'' | '"' | '(' | ')' | '{' | '}' | '<' | '>' | '\n' | '\r')) {
+            anyhow::bail!("SSH connection string contains invalid characters");
+        }
         Ok(Self {
-            connection_string: connection_string.to_string(),
+            connection_string: s.to_string(),
         })
     }
 
@@ -20,7 +31,7 @@ impl SshClient {
     pub async fn exec(&self, command: &str) -> Result<String> {
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=10",
                 &self.connection_string,
                 command,
@@ -71,7 +82,7 @@ impl SshClient {
     pub async fn interactive_shell(&self) -> Result<()> {
         let status = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 &self.connection_string,
             ])
             .status()
@@ -89,7 +100,7 @@ impl SshClient {
     pub async fn scp_upload(&self, local_path: &str, remote_path: &str) -> Result<()> {
         let status = Command::new("scp")
             .args(&[
-                "-o", "StrictHostKeyChecking=no",
+                "-o", "StrictHostKeyChecking=accept-new",
                 local_path,
                 &format!("{}:{}", self.connection_string, remote_path),
             ])

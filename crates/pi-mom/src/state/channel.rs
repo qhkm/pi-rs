@@ -34,7 +34,8 @@ impl ChannelState {
 
     /// Add a message to the conversation
     pub fn add_message(&self, message: AgentMessage) -> Result<()> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write()
+            .map_err(|e| anyhow::anyhow!("Channel state lock poisoned: {}", e))?;
         inner.messages.push(message);
         inner.last_activity = chrono::Utc::now();
         Ok(())
@@ -42,19 +43,22 @@ impl ChannelState {
 
     /// Get all messages in the conversation
     pub fn get_messages(&self) -> Vec<AgentMessage> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read()
+            .expect("Channel state read lock poisoned");
         inner.messages.clone()
     }
 
     /// Get recent messages (up to N)
     pub fn get_recent(&self, n: usize) -> Vec<AgentMessage> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read()
+            .expect("Channel state read lock poisoned");
         inner.messages.iter().rev().take(n).rev().cloned().collect()
     }
 
     /// Clear conversation history
     pub fn clear(&self) -> Result<()> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write()
+            .map_err(|e| anyhow::anyhow!("Channel state lock poisoned: {}", e))?;
         inner.messages.clear();
         inner.last_activity = chrono::Utc::now();
         Ok(())
@@ -62,26 +66,30 @@ impl ChannelState {
 
     /// Set thread timestamp for this conversation
     pub fn set_thread_ts(&self, ts: impl Into<String>) -> Result<()> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write()
+            .map_err(|e| anyhow::anyhow!("Channel state lock poisoned: {}", e))?;
         inner.thread_ts = Some(ts.into());
         Ok(())
     }
 
     /// Get thread timestamp
     pub fn get_thread_ts(&self) -> Option<String> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read()
+            .expect("Channel state read lock poisoned");
         inner.thread_ts.clone()
     }
 
     /// Get message count
     pub fn message_count(&self) -> usize {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read()
+            .expect("Channel state read lock poisoned");
         inner.messages.len()
     }
 
     /// Get last activity time
     pub fn last_activity(&self) -> chrono::DateTime<chrono::Utc> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read()
+            .expect("Channel state read lock poisoned");
         inner.last_activity
     }
 }

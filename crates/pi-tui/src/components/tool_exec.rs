@@ -515,18 +515,20 @@ impl Component for ToolSpinner {
 }
 
 fn truncate_line(line: &str, max_width: usize) -> String {
-    if line.len() <= max_width {
+    if line.chars().count() <= max_width {
         line.to_string()
     } else {
-        format!("{}…", &line[..max_width.saturating_sub(1)])
+        let truncated: String = line.chars().take(max_width.saturating_sub(1)).collect();
+        format!("{}…", truncated)
     }
 }
 
 fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}…", &s[..max_len.saturating_sub(1)])
+        let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{}…", truncated)
     }
 }
 

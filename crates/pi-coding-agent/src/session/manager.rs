@@ -865,8 +865,9 @@ impl SessionManager {
                 let summary = match message {
                     AgentMessage::Llm(msg) => {
                         let text = msg.text_content();
-                        let truncated = if text.len() > 80 {
-                            format!("{}...", &text[..80])
+                        let truncated = if text.chars().count() > 80 {
+                            let t: String = text.chars().take(80).collect();
+                            format!("{}...", t)
                         } else {
                             text
                         };
@@ -953,8 +954,9 @@ impl SessionManager {
 
     /// Truncate a string to at most `max_chars` characters, appending `...` if cut.
     fn truncate(s: &str, max_chars: usize) -> String {
-        if s.len() > max_chars {
-            format!("{}...", &s[..max_chars])
+        if s.chars().count() > max_chars {
+            let truncated: String = s.chars().take(max_chars).collect();
+            format!("{}...", truncated)
         } else {
             s.to_string()
         }

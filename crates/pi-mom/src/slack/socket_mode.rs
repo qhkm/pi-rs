@@ -98,8 +98,34 @@ impl SocketModeClient {
         self
     }
 
-    /// Connect and start listening for events
+    /// Connect and start listening for events.
+    ///
+    /// Automatically reconnects with exponential backoff (1s → 2s → 4s … 60s)
+    /// when the WebSocket connection drops or encounters errors.
     pub async fn connect(&self) -> Result<()> {
+        let mut backoff_secs = 1u64;
+        const MAX_BACKOFF_SECS: u64 = 60;
+
+        loop {
+            match self.connect_once().await {
+                Ok(()) => {
+                    tracing::info!("WebSocket session ended cleanly");
+                    // Reset backoff on clean session
+                    backoff_secs = 1;
+                }
+                Err(e) => {
+                    tracing::error!("WebSocket connection failed: {}", e);
+                }
+            }
+
+            tracing::info!("Reconnecting in {}s...", backoff_secs);
+            tokio::time::sleep(tokio::time::Duration::from_secs(backoff_secs)).await;
+            backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+        }
+    }
+
+    /// Single connection attempt — returns when the WebSocket closes or errors.
+    async fn connect_once(&self) -> Result<()> {
         let ws_url = self.get_websocket_url().await?;
         tracing::info!("Connecting to Slack Socket Mode: {}", ws_url);
 
