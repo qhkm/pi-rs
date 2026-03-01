@@ -7,9 +7,9 @@
 
 ## Current Status
 
-**Completed:** #13, #16, #12, #4, #8, #10, #9  
+**Completed:** #13, #16, #12, #4, #8, #10, #9, #1  
 **In Progress:** None  
-**Remaining:** 10 items
+**Remaining:** 9 items
 
 ---
 
@@ -30,9 +30,17 @@
 
 ---
 
-## 🟡 REMAINING HIGH PRIORITY
-
 ### #1: Merge Test Coverage
+**Status:** ✅ COMPLETED in commit f6a29b9
+
+Added tests for:
+- Branched trees with multiple branches
+- ID collisions with UUID-like IDs
+- Forked session preservation
+
+---
+
+## 🟡 REMAINING HIGH PRIORITY
 **Impact:** 5% | **File:** `crates/pi-agent-core/src/agent/agent_loop.rs`
 
 **What:**
