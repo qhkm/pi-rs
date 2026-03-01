@@ -278,7 +278,7 @@ cargo test -p pi-tui
 
 | Metric | pi (Rust) | Others (Node/TS) |
 |--------|-----------|------------------|
-| Lines of Code | ~39K | ~128K+ |
+| Lines of Code | ~45K | ~128K+ |
 | Binary Size | ~15MB | 100MB+ (bundled) |
 | Startup Time | <50ms | 1-3s |
 | Memory Usage | ~50MB | 200MB+ |
