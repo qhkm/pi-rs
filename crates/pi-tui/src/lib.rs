@@ -66,5 +66,12 @@ pub use slash::{
     SlashCommand, SlashCommandRegistry,
 };
 
+// Image rendering protocols
+pub use image::{
+    ImageProtocolRenderer, ImageRenderer, TerminalProtocol,
+};
+pub use image::iterm2::{is_iterm2_terminal, Iterm2Renderer};
+pub use image::kitty::{is_kitty_terminal, KittyRenderer};
+
 // App framework
 pub use app::{App, AppContext, AppResult, FocusArea, LayoutApp};

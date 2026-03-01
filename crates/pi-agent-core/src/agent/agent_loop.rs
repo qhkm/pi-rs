@@ -16,74 +16,12 @@ use crate::context::compaction::{
 };
 
 use crate::agent::events::{AgentEndReason, AgentEvent};
+use crate::agent::hooks::{HookContext, HookEvent, HookOutcome, HookRegistry, resolve_hook_results};
 use crate::agent::state::{AgentConfig, AgentSharedState, AgentState, default_thinking_budgets};
 use crate::context::budget::ContextUsage;
 use crate::error::{AgentError, Result};
 use crate::messages::{self, AgentMessage};
 use crate::tools::traits::{ToolContext, ToolProgress, ToolResult as AgentToolResult};
-
-/// Hook system for agent lifecycle events
-pub mod hooks {
-    use serde_json::Value;
-    
-    /// Lifecycle events for hook dispatch
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub enum HookEvent {
-        BeforeTurn,
-        AfterTurn,
-        BeforeCompact,
-        AfterCompact,
-    }
-    
-    /// Context passed to hook handlers
-    pub struct HookContext {
-        pub event: HookEvent,
-        pub data: Value,
-    }
-    
-    /// Result from hook handler
-    pub enum HookResult {
-        Continue,
-        Cancel,
-        Modified(Value),
-    }
-    
-    /// Handler function type
-    pub type HookHandler = Box<dyn Fn(&HookContext) -> HookResult + Send + Sync>;
-    
-    /// Registry for hook handlers
-    pub struct HookRegistry {
-        hooks: std::collections::HashMap<HookEvent, Vec<HookHandler>>,
-    }
-    
-    impl HookRegistry {
-        pub fn new() -> Self {
-            Self {
-                hooks: std::collections::HashMap::new(),
-            }
-        }
-        
-        pub fn register(&mut self, event: HookEvent, handler: HookHandler) {
-            self.hooks.entry(event).or_default().push(handler);
-        }
-        
-        pub fn dispatch(&self, ctx: &HookContext) -> Vec<HookResult> {
-            let mut results = Vec::new();
-            if let Some(handlers) = self.hooks.get(&ctx.event) {
-                for handler in handlers {
-                    results.push(handler(ctx));
-                }
-            }
-            results
-        }
-    }
-    
-    impl Default for HookRegistry {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-}
 
 /// A callable that receives the full LLM-visible message list (already
 /// converted from `AgentMessage`) right before it is sent to the provider and
@@ -95,7 +33,7 @@ pub mod hooks {
 /// from any thread.  The closure itself must be `Send + Sync`.
 pub type ContextTransformFn = Box<dyn Fn(&mut Vec<Message>) + Send + Sync>;
 
-/// The Agent drives the core loop of: prompt → stream → tool execution → repeat.
+/// The Agent drives the core loop of: prompt -> stream -> tool execution -> repeat.
 pub struct Agent {
     pub config: AgentConfig,
     pub shared: Arc<AgentSharedState>,
@@ -109,8 +47,12 @@ pub struct Agent {
     context_transforms: Arc<RwLock<Vec<ContextTransformFn>>>,
     /// Event log file handle (if persistence is enabled)
     event_log: Arc<RwLock<Option<std::fs::File>>>,
-    /// Hook registry for lifecycle events
-    hook_registry: std::sync::Arc<tokio::sync::RwLock<hooks::HookRegistry>>,
+    /// Hook registry for extension lifecycle events.
+    ///
+    /// Extensions register handlers via [`HookRegistry::register`]; the agent
+    /// loop dispatches events at key lifecycle points (before/after turn,
+    /// before/after compaction, etc.).
+    hook_registry: Arc<HookRegistry>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,7 +94,7 @@ impl Agent {
             event_tx,
             context_transforms: Arc::new(RwLock::new(Vec::new())),
             event_log: Arc::new(RwLock::new(event_log)),
-            hook_registry: Arc::new(RwLock::new(hooks::HookRegistry::new())),
+            hook_registry: Arc::new(HookRegistry::new()),
         }
     }
 
@@ -195,13 +137,14 @@ impl Agent {
         self.context_transforms.write().await.push(transform);
     }
 
-    /// Register a hook handler for a lifecycle event.
-    pub async fn register_hook(
-        &self,
-        event: hooks::HookEvent,
-        handler: hooks::HookHandler,
-    ) {
-        self.hook_registry.write().await.register(event, handler);
+    /// Return a reference to the hook registry.
+    ///
+    /// Extensions can use this to register handlers for lifecycle events
+    /// (e.g. `BeforeTurn`, `AfterCompact`).  The registry is `Arc`-wrapped
+    /// so the returned reference can be cloned and held across async
+    /// boundaries.
+    pub fn hook_registry(&self) -> &Arc<HookRegistry> {
+        &self.hook_registry
     }
 
     /// Subscribe to agent events
@@ -417,22 +360,26 @@ impl Agent {
                     }
                 }
 
-                // Dispatch BeforeTurn hooks
-                let before_turn_ctx = hooks::HookContext {
-                    event: hooks::HookEvent::BeforeTurn,
-                    data: serde_json::json!({"turn_index": turn_index}),
-                };
-                let before_turn_results = self.hook_registry.read().await.dispatch(&before_turn_ctx);
-                for result in before_turn_results {
-                    match result {
-                        hooks::HookResult::Cancel => {
-                            tracing::info!("BeforeTurn hook cancelled turn {}", turn_index);
-                            return last_message.ok_or(AgentError::Aborted);
+                // ── BeforeTurn hook ────────────────────────────────────────
+                {
+                    let ctx = HookContext {
+                        event: HookEvent::BeforeTurn,
+                        data: serde_json::json!({ "turn_index": turn_index }),
+                    };
+                    let results = self.hook_registry.dispatch(&ctx).await;
+                    match resolve_hook_results(results) {
+                        HookOutcome::Cancelled => {
+                            tracing::info!(turn_index, "BeforeTurn hook cancelled the turn");
+                            // Skip this turn entirely -- behave as if the model
+                            // returned no tool calls so we exit the inner loop.
+                            break;
                         }
-                        hooks::HookResult::Modified(data) => {
-                            tracing::debug!("BeforeTurn hook modified data: {:?}", data);
+                        HookOutcome::Modified(_data) => {
+                            // Extensions may attach metadata; currently no
+                            // mutable turn-level state to override.
+                            tracing::debug!(turn_index, "BeforeTurn hook returned Modified (ignored for now)");
                         }
-                        _ => {}
+                        HookOutcome::Continue => {}
                     }
                 }
 
@@ -489,59 +436,30 @@ impl Agent {
 
                 last_message = Some(assistant_msg.clone());
 
-                // Dispatch AfterTurn hooks
-                let after_turn_ctx = hooks::HookContext {
-                    event: hooks::HookEvent::AfterTurn,
-                    data: serde_json::json!({
-                        "turn_index": turn_index,
-                        "has_tool_calls": has_tool_calls,
-                    }),
-                };
-                let after_turn_results = self.hook_registry.read().await.dispatch(&after_turn_ctx);
-                for result in after_turn_results {
-                    match result {
-                        hooks::HookResult::Cancel => {
-                            tracing::info!("AfterTurn hook cancelled after turn {}", turn_index);
-                            return last_message.ok_or(AgentError::Aborted);
-                        }
-                        hooks::HookResult::Modified(data) => {
-                            tracing::debug!("AfterTurn hook modified data: {:?}", data);
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Auto-compaction check — read the runtime-mutable flag from shared state
+                // Auto-compaction check -- read the runtime-mutable flag from shared state
                 // rather than the static AgentConfig so that SetAutoCompaction RPC commands
                 // take effect without rebuilding the agent.
                 if self.shared.auto_compaction_enabled.load(std::sync::atomic::Ordering::Relaxed) {
                     let usage = self.context_usage().await;
                     let context_window = self.config.token_budget.context_window;
                     if should_compact(usage.total_tokens, context_window, &self.config.compaction) {
-                        self.emit(AgentEvent::AutoCompaction);
-                        
-                        // Dispatch BeforeCompact hooks
-                        let before_compact_ctx = hooks::HookContext {
-                            event: hooks::HookEvent::BeforeCompact,
-                            data: serde_json::json!({
-                                "turn_index": turn_index,
-                                "tokens": usage.total_tokens,
-                                "context_window": context_window,
-                            }),
+                        // ── BeforeCompact hook ─────────────────────────────
+                        let compact_cancelled = {
+                            let ctx = HookContext {
+                                event: HookEvent::BeforeCompact,
+                                data: serde_json::json!({
+                                    "total_tokens": usage.total_tokens,
+                                    "context_window": context_window,
+                                }),
+                            };
+                            let results = self.hook_registry.dispatch(&ctx).await;
+                            matches!(resolve_hook_results(results), HookOutcome::Cancelled)
                         };
-                        let before_compact_results = self.hook_registry.read().await.dispatch(&before_compact_ctx);
-                        let mut should_cancel_compact = false;
-                        for result in before_compact_results {
-                            match result {
-                                hooks::HookResult::Cancel => {
-                                    should_cancel_compact = true;
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                        
-                        if !should_cancel_compact {
+
+                        if compact_cancelled {
+                            tracing::info!("BeforeCompact hook cancelled auto-compaction");
+                        } else {
+                            self.emit(AgentEvent::AutoCompaction);
                             match self.run_compaction(None).await {
                                 Ok(result) => {
                                     tracing::info!(
@@ -549,17 +467,16 @@ impl Agent {
                                         tokens_after = result.tokens_after,
                                         "Auto-compacted context"
                                     );
-                                    
-                                    // Dispatch AfterCompact hooks
-                                    let after_compact_ctx = hooks::HookContext {
-                                        event: hooks::HookEvent::AfterCompact,
+                                    // ── AfterCompact hook ──────────────────
+                                    let ctx = HookContext {
+                                        event: HookEvent::AfterCompact,
                                         data: serde_json::json!({
-                                            "turn_index": turn_index,
                                             "tokens_before": result.tokens_before,
                                             "tokens_after": result.tokens_after,
+                                            "messages_compacted": result.messages_compacted,
                                         }),
                                     };
-                                    let _ = self.hook_registry.read().await.dispatch(&after_compact_ctx);
+                                    let _ = self.hook_registry.dispatch(&ctx).await;
                                 }
                                 Err(e) => {
                                     tracing::warn!("Auto-compaction failed: {e}");
@@ -571,6 +488,18 @@ impl Agent {
 
                 // If no tool calls, we're done with this inner loop
                 if !has_tool_calls {
+                    // ── AfterTurn hook (no tool calls) ─────────────────────
+                    {
+                        let ctx = HookContext {
+                            event: HookEvent::AfterTurn,
+                            data: serde_json::json!({
+                                "turn_index": turn_index,
+                                "has_tool_calls": false,
+                            }),
+                        };
+                        let _ = self.hook_registry.dispatch(&ctx).await;
+                    }
+
                     self.emit(AgentEvent::TurnEnd {
                         turn_index,
                         message: Some(Message::Assistant(assistant_msg)),
@@ -588,6 +517,19 @@ impl Agent {
                     for result in &tool_results {
                         msgs.push(AgentMessage::from_llm(result.clone()));
                     }
+                }
+
+                // ── AfterTurn hook (with tool calls) ───────────────────────
+                {
+                    let ctx = HookContext {
+                        event: HookEvent::AfterTurn,
+                        data: serde_json::json!({
+                            "turn_index": turn_index,
+                            "has_tool_calls": true,
+                            "tool_count": tool_calls.len(),
+                        }),
+                    };
+                    let _ = self.hook_registry.dispatch(&ctx).await;
                 }
 
                 self.emit(AgentEvent::TurnEnd {

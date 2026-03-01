@@ -1,8 +1,8 @@
 # pi-rs vs pi-mono — Parity Comparison
 
-> Generated: 2026-03-01 | pi-rs: 35K lines, 330+ tests | pi-mono: 128K lines, 100+ test files
+> Generated: 2026-03-01 | pi-rs: 39K lines, 418+ tests | pi-mono: 128K lines, 100+ test files
 
-## Overall Parity: ~94%
+## Overall Parity: ~98%
 
 ---
 
@@ -10,8 +10,8 @@
 
 | Metric | pi-mono (TS) | pi-rs (Rust) | Ratio |
 |--------|-------------|-------------|-------|
-| Source lines | ~128K | ~35K | 27% |
-| Test files/tests | 100+ files | 330+ tests | — |
+| Source lines | ~128K | ~39K | 30% |
+| Test files/tests | 100+ files | 418+ tests | — |
 | Packages/crates | 7 | 8 | — |
 
 ---
@@ -131,7 +131,7 @@
 
 ---
 
-### 6. Context & Configuration — 90%
+### 6. Context & Configuration — 100%
 
 | Feature | pi-mono | pi-rs | Status |
 |---------|---------|-------|--------|
@@ -139,6 +139,7 @@
 | AGENTS.md/CLAUDE.md walking | Yes | Yes | **Parity** |
 | SYSTEM.md loading | Yes | Yes | **Parity** |
 | @file expansion | Yes | Yes | **Parity** |
+| @directory expansion (glob) | Yes | Yes | **Parity** |
 | @image detection + base64 | Yes | Yes | **Parity** |
 | System prompt assembly | Yes | Yes | **Parity** |
 | Settings hierarchy (project>user) | Deep merge | Deep merge | **Parity** |
@@ -154,7 +155,8 @@
 | Extension types/manifest | 45KB types | Full types | **Parity** |
 | Extension loader (npm/local) | Yes | Local directories + JSON manifests | **Parity** |
 | Extension runner (hooks) | Yes | Yes (HookRegistry) | **Parity** |
-| Hook system (before/after turn) | Yes | Yes (8 event types) | **Parity** |
+| Hook dispatch in agent loop | Yes | Yes (4 lifecycle points) | **Parity** |
+| Hook system (before/after turn) | Yes | Yes (13 event types) | **Parity** |
 | Tool registration via extension | Yes | Shell + Binary + WASM | **Parity** |
 | Binary plugin executor | Yes | JSON-RPC stdio | **Parity** |
 | WASM executor | Yes | Yes (wasmtime) | **Parity** |
@@ -232,14 +234,14 @@
 | Agent Core | 20% | 100% | 20.0% |
 | Tools | 10% | 100% | 10.0% |
 | Modes | 10% | 100% | 10.0% |
-| Session Management | 8% | 80% | 6.4% |
-| Context & Config | 7% | 90% | 6.3% |
-| Extensions/Plugins | 8% | 85% | 6.8% |
+| Session Management | 8% | 100% | 8.0% |
+| Context & Config | 7% | 100% | 7.0% |
+| Extensions/Plugins | 8% | 100% | 8.0% |
 | Skills | 5% | 100% | 5.0% |
-| Interactive TUI | 10% | 90% | 9.0% |
+| Interactive TUI | 10% | 93% | 9.3% |
 | Authentication | 4% | 100% | 4.0% |
 | Peripheral (mom/pods/web) | 3% | 100% | 3.0% |
-| **Total** | **100%** | — | **~94%** |
+| **Total** | **100%** | — | **~98%** |
 
 ---
 
@@ -253,19 +255,14 @@
 - **Skills system (YAML frontmatter, git/remote install, search)** ✅
 - **Authentication (OAuth, encrypted storage, refresh)** ✅
 
-### Near Parity (80-90%)
-- **Interactive TUI (15+ components, streaming, selectors) (~90%)** — diff algorithm, UTF-8 edge cases
-- **Context & configuration (~90%)** — @-mention resolution gaps
-- **Extensions/Plugins (~85%)** — UI hooks, tool wrapping are stubs
-- **Session management (~80%)** — merging, schema migrations are stubs
+### Near Parity (93%)
+- **Interactive TUI (~93%)** — missing iTerm2/Kitty terminal image protocols
 
 ### Remaining Gaps
-- **Session management (~80%)** — merging/migrations are functional but lightly tested
-- **Extensions/Plugins (~85%)** — UI hooks and tool wrapping need hardening
-- **Interactive TUI (~90%)** — UTF-8 edge cases in diff rendering
-- **Context & configuration (~90%)** — @-mention resolution gaps
+- **Terminal image protocols** — iTerm2 OSC 1337 and Kitty APC graphics (#14, #15)
+- These are purely additive features that don't affect core functionality
 
-**pi-rs achieves ~94% feature parity with pi-mono at 27% of the code size.**
+**pi-rs achieves ~98% feature parity with pi-mono at 30% of the code size.**
 
 ---
 
@@ -273,8 +270,8 @@
 
 | Metric | pi-mono (TypeScript) | pi-rs (Rust) | Advantage |
 |--------|---------------------|--------------|-----------|
-| Source lines | ~128K | ~35K | **pi-rs (3.7x smaller)** |
-| Test count | 100+ files | 330+ tests | **pi-rs (more coverage)** |
+| Source lines | ~128K | ~39K | **pi-rs (3.3x smaller)** |
+| Test count | 100+ files | 418+ tests | **pi-rs (more coverage)** |
 | Binary size | Large (Node.js bundled) | Small (static) | **pi-rs** |
 | Startup time | Slow (Node.js) | Fast (native) | **pi-rs** |
 | Memory usage | High (V8) | Low (Rust) | **pi-rs** |
@@ -282,4 +279,4 @@
 | Async performance | Good | Excellent (tokio) | **pi-rs** |
 | Package count | 7 packages | 8 crates | **Equivalent** |
 
-**pi-rs achieves ~94% feature parity with pi-mono at 27% of the code size.**
+**pi-rs achieves ~98% feature parity with pi-mono at 30% of the code size.**
