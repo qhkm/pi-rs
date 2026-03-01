@@ -7,9 +7,9 @@
 
 ## Current Status
 
-**Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2  
+**Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2, #7  
 **In Progress:** None  
-**Remaining:** 8 items
+**Remaining:** 7 items
 
 ---
 
@@ -113,18 +113,27 @@ async fn merge_branched_tree_remaps_all_ids() {
 ---
 
 ### #7: @directory Expansion with Globs
-**Impact:** 4% | **File:** `crates/pi-coding-agent/src/input/file_processor.rs`
+**Status:** ✅ COMPLETED in commit b48976b
 
-**Add support for:**
-- `@dirname/` → include all files in directory
-- `@dirname/**/*.rs` → glob pattern expansion
-- `@"path with spaces/"` → quoted directory paths
+**Implemented:**
+- ✅ `@dirname/` → includes all files in directory (non-recursive)
+- ✅ `@dirname/**/*.rs` → glob pattern expansion with `**` support
+- ✅ `@"path with spaces/"` → quoted directory paths with spaces
 
 **Implementation:**
-- Add glob dependency or use simple pattern matching
-- In `process_input()`, detect trailing `/` in reference
-- Expand to individual files before processing
-- Handle recursion depth limit
+- Added `process_directory()` for directory expansion using glob
+- Added `process_glob()` for pattern matching (resolves relative to cwd)
+- Added `process_single_file()` for shared file processing logic
+- Modified `process_file_ref()` to detect trailing `/` or glob patterns
+
+**New tests (+7):**
+- `test_directory_expansion`
+- `test_glob_pattern_expansion`
+- `test_recursive_glob_expansion`
+- `test_quoted_directory_path`
+- `test_directory_not_found_kept_as_text`
+- `test_glob_no_matches_kept_as_text`
+- `test_directory_with_images`
 
 ---
 
