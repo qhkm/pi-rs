@@ -10,6 +10,8 @@ A high-performance, terminal-native AI coding agent built in Rust. This is a Rus
 
 **Philosophy:** Pi provides primitives, not features. Sub-agents, plan mode, permission gates—build them yourself or install a package. Adapt pi to your workflows, not the other way around. [Read more →](PHILOSOPHY.md)
 
+> 🤖 **Vibe Coded** — This is a vibecoded project. It's here to inspire, not to be a polished product. Fork it, tear it apart, or use it as a starting point to build your own AI coding agent.
+
 ## 🚀 Quick Start
 
 ```bash
@@ -279,7 +281,7 @@ cargo test -p pi-tui
 | Metric | pi (Rust) | Others (Node/TS) |
 |--------|-----------|------------------|
 | Lines of Code | ~45K | ~128K+ |
-| Binary Size | ~15MB | 100MB+ (bundled) |
+| Binary Size | ~15MB | 50-100MB+ (bundled) |
 | Startup Time | <50ms | 1-3s |
 | Memory Usage | ~50MB | 200MB+ |
 | Test Coverage | 461+ tests | Varies |
