@@ -7,50 +7,32 @@
 
 ## Current Status
 
-**Completed:** #13, #16, #12, #4, #8  
-**In Progress:** #10 (blocked by file corruption)  
-**Remaining:** 12 items
-
----
-
-## 🔴 CRITICAL: Fix File Corruption First
-
-### Issue: `crates/pi-coding-agent/src/extensions/mod.rs`
-
-**Problem:** Lines 496-535 have corrupted/merged functions
-
-**Symptoms:**
-```rust
-// Current (broken):
-async fn execute_executor(
-    tool: &RuntimeExtensionTool,
-    args: Value,
-    timeout_secs: u64,
-    ctx: &ToolContext,
-) -> pi_agent_core::Result<ToolResult> {
-    match &tool.executor {
-    path: &str,  // <-- This is from execute_wasm, merged incorrectly!
-    args: Value,
-    timeout_secs: u64,
-    abort: &tokio::sync::watch::Receiver<bool>,
-    _tool_name: &str,
-) -> pi_agent_core::Result<ToolResult> {
-```
-
-**Fix Required:**
-1. Separate `execute_executor` function (handles Shell/Binary/WASM dispatch)
-2. Separate `execute_wasm` function (WASM-specific execution)
-3. Ensure `execute_with_wrapper` calls them correctly
-
-**After fix, complete #10:**
-- Wire wrapper hooks in `RuntimeExtensionTool::execute()`
-- Test with wrapper that modifies args and returns early
+**Completed:** #13, #16, #12, #4, #8, #10, #9  
+**In Progress:** None  
+**Remaining:** 10 items
 
 ---
 
 ## 🟡 HIGH PRIORITY (Medium Effort, High Impact)
 
 ### #9: Wire Hook Dispatch into Agent Loop
+**Status:** ✅ COMPLETED in commit 8b68539
+
+---
+
+### #10: Tool Wrapper Execution Wiring  
+**Status:** ✅ COMPLETED in commit 8b68539
+
+- Added `wrapper_registry` field to `RuntimeExtensionTool`
+- Modified `execute()` to call `execute_wrapper_hook()` for before/after hooks
+- Added `WrapperHookType` enum for before/after distinction
+- Path traversal protection already in place
+
+---
+
+## 🟡 REMAINING HIGH PRIORITY
+
+### #1: Merge Test Coverage
 **Impact:** 5% | **File:** `crates/pi-agent-core/src/agent/agent_loop.rs`
 
 **What:**
