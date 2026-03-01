@@ -375,24 +375,24 @@ enum BedrockStreamEvent {
     MessageStart { message: BedrockMessageStart },
     #[serde(rename = "contentBlockStart")]
     ContentBlockStart {
-        #[serde(rename = "content_block_index")]
+        #[serde(alias = "content_block_index", alias = "contentBlockIndex")]
         content_block_index: usize,
         start: ContentBlockStart,
     },
     #[serde(rename = "contentBlockDelta")]
     ContentBlockDelta {
-        #[serde(rename = "content_block_index")]
+        #[serde(alias = "content_block_index", alias = "contentBlockIndex")]
         content_block_index: usize,
         delta: ContentBlockDelta,
     },
     #[serde(rename = "contentBlockStop")]
     ContentBlockStop {
-        #[serde(rename = "content_block_index")]
+        #[serde(alias = "content_block_index", alias = "contentBlockIndex")]
         content_block_index: usize,
     },
     #[serde(rename = "messageStop")]
     MessageStop {
-        #[serde(rename = "stop_reason")]
+        #[serde(alias = "stop_reason", alias = "stopReason")]
         stop_reason: String,
     },
     #[serde(rename = "metadata")]

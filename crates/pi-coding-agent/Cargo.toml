@@ -3,7 +3,7 @@ name = "pi-coding-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Interactive CLI coding agent"
+description = "π (pi) — High-performance AI coding agent with 101+ models, streaming TUI, and extensible plugin system"
 
 [[bin]]
 name = "pi"
@@ -28,7 +28,19 @@ chrono = { workspace = true }
 regex = { workspace = true }
 glob = { workspace = true }
 base64 = { workspace = true }
+serde_yaml = "0.9"
+walkdir = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tempfile = "3"
 fs2 = "0.4"
+
+# Optional WASM executor
+wasmtime = { version = "23", optional = true }
+wasmtime-wasi = { version = "23", optional = true }
+
+[features]
+default = []
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

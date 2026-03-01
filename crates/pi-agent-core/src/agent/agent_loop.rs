@@ -1024,7 +1024,9 @@ impl Agent {
             // We need the event for both the log and the broadcast channel, so
             // clone once here.
             let log_event = event.clone();
-            // Use blocking write to ensure events are never silently dropped.
+            // Use try_write to avoid blocking the caller. If the lock is
+            // contended the event is dropped from the log (but still broadcast).
+            // In practice contention is rare since emit() is the only writer.
             if let Ok(guard) = self.event_log.try_write() {
                 if let Some(ref file) = *guard {
                     let entry = serde_json::json!({

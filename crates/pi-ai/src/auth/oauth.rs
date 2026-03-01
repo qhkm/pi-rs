@@ -821,6 +821,9 @@ impl TokenStorage {
     /// Obtain the raw key seed. Prefers the OS keyring; falls back to a
     /// machine-specific value.
     fn get_key_seed(&self) -> Result<String> {
+        // Skip the keyring in test builds to avoid interactive macOS Keychain
+        // authorization prompts that would block the test runner.
+        #[cfg(not(test))]
         if let Ok(seed) = self.get_seed_from_keyring() {
             return Ok(seed);
         }
@@ -876,12 +879,51 @@ impl TokenStorage {
             }
         }
 
-        // Fallback: derive from username + home dir for *some* uniqueness.
-        // This is weaker than a keyring but still machine-local.
-        tracing::warn!("Using weak fallback key — install a keyring backend for proper token security");
-        let user = std::env::var("USER").unwrap_or_default();
-        let home = std::env::var("HOME").unwrap_or_default();
-        Ok(format!("pi-ai-fallback:{user}:{home}"))
+        #[cfg(target_os = "windows")]
+        {
+            // Try to read the Windows MachineGuid from the registry.
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(["query", r"HKLM\SOFTWARE\Microsoft\Cryptography", "/v", "MachineGuid"])
+                .output()
+            {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // Output line format: "    MachineGuid    REG_SZ    <guid>"
+                for line in stdout.lines() {
+                    if line.contains("MachineGuid") {
+                        if let Some(guid) = line.split_whitespace().last() {
+                            if !guid.is_empty() {
+                                return Ok(guid.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ultimate fallback: generate a random key and persist it to a file
+        // within the secure token directory. This is stronger than deriving
+        // from environment variables since an attacker cannot predict the key
+        // from system metadata alone.
+        let fallback_key_path = self.base_path.join(".encryption-key");
+        if let Ok(existing) = std::fs::read_to_string(&fallback_key_path) {
+            let trimmed = existing.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+
+        tracing::warn!("Generating fallback encryption key — install a keyring backend for proper token security");
+        use rand::Rng;
+        let key: String = (0..64)
+            .map(|_| rand::thread_rng().gen_range(33u8..127u8) as char)
+            .collect();
+        std::fs::write(&fallback_key_path, &key)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fallback_key_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(key)
     }
 }
 
@@ -936,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn test_xor_encryption_roundtrip() {
+    fn test_aes_gcm_encryption_roundtrip() {
         let dir = std::env::temp_dir().join(format!("pi-ai-test-{}", uuid::Uuid::new_v4()));
         let storage = TokenStorage::with_path(dir.clone()).unwrap();
 

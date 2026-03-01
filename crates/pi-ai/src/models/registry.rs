@@ -67,6 +67,10 @@ impl Model {
 
 /// Lazily-initialised, process-lifetime catalogue of built-in models.
 ///
+/// Contains the 101 most commonly used models across all supported providers.
+/// pi-mono auto-generates 200+ entries; additional models can be added here
+/// or registered at runtime via `ModelRegistry::register`.
+///
 /// Allocated once on first access; all subsequent calls return a reference to
 /// the same slice.
 static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {

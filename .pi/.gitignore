@@ -1,0 +1,16 @@
+# User-specific settings - do not commit
+settings.json
+local/
+
+# Cache files
+cache/
+*.cache
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp

@@ -543,8 +543,10 @@ impl VertexProvider {
         let mut buffer = String::new();
 
         let mut text_content_index: Option<usize> = None;
-        // Track multiple tool calls by their content index (I4 fix).
-        let mut tool_indices: HashMap<String, usize> = HashMap::new();
+        // Track tool calls by content index. Use a counter to generate unique
+        // keys so the same tool called twice gets separate entries (I4 fix).
+        let mut tool_indices: HashMap<usize, usize> = HashMap::new();
+        let mut tool_call_counter: usize = 0;
 
         let _ = tx
             .send(StreamEvent::Start {
@@ -636,32 +638,28 @@ impl VertexProvider {
                                             .await;
                                     }
 
-                                    // Handle function calls — each unique name
-                                    // gets its own content index so parallel
-                                    // tool calls are tracked independently.
+                                    // Handle function calls — each call gets a
+                                    // unique content index so parallel calls
+                                    // (even the same tool twice) are tracked
+                                    // independently.
                                     if let Some(fc) = &part.function_call {
-                                        let ci = if let Some(&existing) =
-                                            tool_indices.get(&fc.name)
-                                        {
-                                            existing
-                                        } else {
-                                            let i = partial.content.len();
-                                            let tool_id = format!("vertex_tool_{}", i);
-                                            partial.content.push(Content::ToolCall {
-                                                id: tool_id,
-                                                name: fc.name.clone(),
-                                                arguments: fc.args.clone(),
-                                                thought_signature: None,
-                                            });
-                                            tool_indices.insert(fc.name.clone(), i);
-                                            let _ = tx
-                                                .send(StreamEvent::ToolCallStart {
-                                                    content_index: i,
-                                                    partial: partial.clone(),
-                                                })
-                                                .await;
-                                            i
-                                        };
+                                        let i = partial.content.len();
+                                        let tool_id = format!("vertex_tool_{}", i);
+                                        partial.content.push(Content::ToolCall {
+                                            id: tool_id,
+                                            name: fc.name.clone(),
+                                            arguments: fc.args.clone(),
+                                            thought_signature: None,
+                                        });
+                                        tool_indices.insert(tool_call_counter, i);
+                                        tool_call_counter += 1;
+                                        let _ = tx
+                                            .send(StreamEvent::ToolCallStart {
+                                                content_index: i,
+                                                partial: partial.clone(),
+                                            })
+                                            .await;
+                                        let ci = i;
                                         if let Some(Content::ToolCall {
                                             arguments: ref mut a,
                                             ..

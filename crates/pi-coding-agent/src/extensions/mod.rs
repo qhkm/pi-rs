@@ -1,9 +1,11 @@
 pub mod hooks;
 pub mod types;
+pub mod wasm;
 
 pub use hooks::HookRegistry;
 pub use types::{Extension, ExtensionManifest};
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,9 +17,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tracing::warn;
 
-use self::types::{ExecutorType, ExtensionToolDef};
+use self::types::{ExecutorType, ExtensionCommand, ExtensionToolDef};
+use self::wasm::WasmModuleCache;
 
 const MANIFEST_FILE_NAME: &str = "extension.json";
+
+/// Global WASM module cache (lazy-initialized)
+fn get_wasm_cache() -> &'static WasmModuleCache {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<WasmModuleCache> = OnceLock::new();
+    CACHE.get_or_init(WasmModuleCache::new)
+}
 
 pub fn discover_extensions(cwd: &Path) -> Result<Vec<Extension>> {
     let mut roots = Vec::new();
@@ -82,6 +92,104 @@ pub async fn register_extension_tools(
     count
 }
 
+/// Register extension commands with the command dispatcher.
+pub fn register_extension_commands(
+    dispatcher: &mut CommandDispatcher,
+    extensions: &[Extension],
+) -> usize {
+    let mut count = 0usize;
+    for extension in extensions {
+        for cmd in &extension.manifest.commands {
+            let ext_cmd = ExtensionCommandHandler {
+                extension_path: extension.path.clone(),
+                command: cmd.clone(),
+            };
+            dispatcher.register(&cmd.name, Box::new(ext_cmd));
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Command handler trait for extension commands.
+pub trait CommandHandler: Send + Sync {
+    fn execute(&self, args: &[String]) -> Result<String>;
+}
+
+/// Command dispatcher for extension commands.
+pub struct CommandDispatcher {
+    commands: HashMap<String, Box<dyn CommandHandler>>,
+}
+
+impl CommandDispatcher {
+    pub fn new() -> Self {
+        Self {
+            commands: HashMap::new(),
+        }
+    }
+    
+    pub fn register(&mut self, name: &str, handler: Box<dyn CommandHandler>) {
+        self.commands.insert(name.to_string(), handler);
+    }
+    
+    pub fn get(&self, name: &str) -> Option<&dyn CommandHandler> {
+        self.commands.get(name).map(|h| h.as_ref())
+    }
+    
+    pub fn has(&self, name: &str) -> bool {
+        self.commands.contains_key(name)
+    }
+    
+    pub fn execute(&self, name: &str, args: &[String]) -> Result<String> {
+        if let Some(handler) = self.get(name) {
+            handler.execute(args)
+        } else {
+            anyhow::bail!("Unknown command: {}", name)
+        }
+    }
+    
+    pub fn list_commands(&self) -> Vec<&str> {
+        self.commands.keys().map(|s| s.as_str()).collect()
+    }
+}
+
+impl Default for CommandDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Extension command handler.
+struct ExtensionCommandHandler {
+    extension_path: PathBuf,
+    command: ExtensionCommand,
+}
+
+impl CommandHandler for ExtensionCommandHandler {
+    fn execute(&self, args: &[String]) -> Result<String> {
+        // For now, commands are executed as shell scripts in the extension directory
+        let script_path = self.extension_path.join("commands").join(format!("{}.sh", self.command.name));
+        
+        if !script_path.exists() {
+            anyhow::bail!("Command script not found: {}", script_path.display());
+        }
+        
+        let output = std::process::Command::new("bash")
+            .arg(&script_path)
+            .args(args)
+            .current_dir(&self.extension_path)
+            .output()
+            .context("Failed to execute command")?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Command failed: {}", stderr);
+        }
+        
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RuntimeExtensionTool {
     tool_name: String,
@@ -95,6 +203,7 @@ struct RuntimeExtensionTool {
 enum RuntimeExecutor {
     Shell { command: String },
     Binary { path: String },
+    Wasm { path: String },
 }
 
 impl RuntimeExtensionTool {
@@ -126,16 +235,27 @@ impl RuntimeExtensionTool {
                         return None;
                     }
                 };
-                RuntimeExecutor::Binary { path }
+                let full_path = extension.path.join(&path);
+                RuntimeExecutor::Binary {
+                    path: full_path.to_string_lossy().to_string(),
+                }
             }
             ExecutorType::Wasm => {
-                warn!(
-                    extension = %extension.manifest.name,
-                    tool = %tool.name,
-                    executor = ?tool.executor,
-                    "Skipping unsupported extension tool executor"
-                );
-                return None;
+                let path = match tool.binary.clone() {
+                    Some(p) if !p.trim().is_empty() => p,
+                    _ => {
+                        warn!(
+                            extension = %extension.manifest.name,
+                            tool = %tool.name,
+                            "Skipping WASM extension tool without wasm path"
+                        );
+                        return None;
+                    }
+                };
+                let full_path = extension.path.join(&path);
+                RuntimeExecutor::Wasm {
+                    path: full_path.to_string_lossy().to_string(),
+                }
             }
         };
 
@@ -261,6 +381,9 @@ impl AgentTool for RuntimeExtensionTool {
                 )
                 .await
             }
+            RuntimeExecutor::Wasm { path } => {
+                execute_wasm(path, args, timeout_secs, &ctx.abort, &self.tool_name).await
+            }
         }
     }
     
@@ -272,6 +395,41 @@ impl AgentTool for RuntimeExtensionTool {
             declared_tool_name: self.declared_tool_name.clone(),
             executor: self.executor.clone(),
         })
+    }
+}
+
+async fn execute_wasm(
+    path: &str,
+    args: Value,
+    timeout_secs: u64,
+    abort: &tokio::sync::watch::Receiver<bool>,
+    _tool_name: &str,
+) -> pi_agent_core::Result<ToolResult> {
+    let path_buf = PathBuf::from(path);
+    let mut abort_rx = abort.clone();
+    
+    // Load and execute with timeout
+    let result = tokio::select! {
+        result = async {
+            let cache = get_wasm_cache();
+            cache.execute_file(&path_buf, args).await
+        } => result,
+        _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => {
+            return Ok(ToolResult::error(format!("WASM execution timed out after {timeout_secs}s")));
+        }
+        result = abort_rx.changed() => {
+            if let Ok(()) = result {
+                if *abort_rx.borrow() {
+                    return Ok(ToolResult::error("WASM execution aborted"));
+                }
+            }
+            return Ok(ToolResult::error("WASM execution aborted (watch error)"));
+        }
+    };
+    
+    match result {
+        Ok(output) => Ok(ToolResult::success(output.to_string())),
+        Err(e) => Ok(ToolResult::error(format!("WASM execution failed: {e}"))),
     }
 }
 
@@ -476,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_tool_skips_wasm_executor() {
+    fn runtime_tool_skips_wasm_executor_without_binary() {
         let extension = Extension {
             manifest: ExtensionManifest {
                 name: "ext".to_string(),
@@ -527,5 +685,25 @@ mod tests {
             build_binary_jsonrpc_result(r#"{"jsonrpc":"2.0","id":"1","result":{"ok":true}}"#, "");
         assert!(!result.is_error);
         assert_eq!(result.content, r#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn command_dispatcher_registers_and_executes() {
+        struct TestHandler;
+        impl CommandHandler for TestHandler {
+            fn execute(&self, args: &[String]) -> Result<String> {
+                Ok(format!("executed with {} args", args.len()))
+            }
+        }
+
+        let mut dispatcher = CommandDispatcher::new();
+        dispatcher.register("test", Box::new(TestHandler));
+        
+        assert!(dispatcher.has("test"));
+        assert!(!dispatcher.has("unknown"));
+        
+        let result = dispatcher.execute("test", &["arg1".to_string()]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "executed with 1 args");
     }
 }

@@ -1,6 +1,41 @@
+# Rust build artifacts
 /target
 Cargo.lock
+
+# IDE files
 *.swp
 *.swo
+*.swn
+.idea/
+.vscode/
+*.iml
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Environment files
 .env
+.env.local
+
+# User-specific pi config (keep example files)
+/.pi/settings.json
+/.pi/cache/
+/.pi/logs/
+/.pi/tmp/
+
+# Test artifacts
+*.profraw
+/coverage/
+
+# Documentation build
+docs/_build/
+/book/
+
+# Profiling data
+flamegraph.svg
+perf.data*
+
+# Local development
+local/
+*.local

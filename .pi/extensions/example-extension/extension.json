@@ -1,0 +1,27 @@
+{
+  "_comment": "Example extension manifest - place in .pi/extensions/my-extension/extension.json",
+  "name": "example-extension",
+  "version": "1.0.0",
+  "description": "An example extension demonstrating the extension format",
+  "author": "pi contributors",
+  "tools": [
+    {
+      "name": "hello",
+      "description": "Says hello to the user",
+      "executor": "shell",
+      "command": "echo 'Hello from pi extension!'"
+    },
+    {
+      "name": "project-stats",
+      "description": "Show project statistics (lines of code, file count)",
+      "executor": "shell",
+      "command": "find . -name '*.rs' -type f | head -20 | xargs wc -l 2>/dev/null || echo 'No Rust files found'"
+    }
+  ],
+  "commands": [
+    {
+      "name": "status",
+      "description": "Show extension status"
+    }
+  ]
+}

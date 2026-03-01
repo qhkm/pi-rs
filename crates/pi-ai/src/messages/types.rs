@@ -13,12 +13,19 @@ pub enum Api {
     BedrockConverseStream,
     GoogleGenerativeAI,
     GoogleVertex,
+    /// Forward-declared: native Mistral API (currently routed via OpenAI-compatible endpoint).
     MistralNative,
+    /// Forward-declared: native Groq API (currently routed via OpenAI-compatible endpoint).
     GroqNative,
+    /// Forward-declared: native xAI API (currently routed via OpenAI-compatible endpoint).
     XAINative,
+    /// Forward-declared: native Cerebras API (currently routed via OpenAI-compatible endpoint).
     CerebrasNative,
+    /// Forward-declared: native OpenRouter API (currently routed via OpenAI-compatible endpoint).
     OpenRouterNative,
+    /// Forward-declared: native MiniMax API (currently routed via OpenAI-compatible endpoint).
     MiniMaxNative,
+    /// Forward-declared: native HuggingFace API (currently routed via OpenAI-compatible endpoint).
     HuggingFaceNative,
     #[serde(untagged)]
     Custom(String),

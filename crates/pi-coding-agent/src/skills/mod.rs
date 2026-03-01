@@ -6,10 +6,36 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use pi_agent_core::{AgentTool, ToolContext, ToolResult};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const SKILL_FILE_NAME: &str = "SKILL.md";
 const MAX_SKILL_CHARS: usize = 8_000;
+
+/// Full skill metadata from YAML frontmatter.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillMetadata {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// Source URL for remote skills (git repo, etc.)
+    #[serde(default)]
+    pub source: Option<String>,
+    /// License information
+    #[serde(default)]
+    pub license: Option<String>,
+    /// Minimum pi version required
+    #[serde(default)]
+    pub min_pi_version: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
@@ -17,6 +43,32 @@ pub struct Skill {
     pub description: String,
     pub path: PathBuf,
     pub content: String,
+    /// Full metadata from frontmatter
+    pub metadata: SkillMetadata,
+}
+
+impl Skill {
+    /// Get formatted info for display.
+    pub fn info(&self) -> String {
+        let mut info = format!("Name: {}\n", self.name);
+        info.push_str(&format!("Description: {}\n", self.description));
+        if !self.metadata.version.is_empty() {
+            info.push_str(&format!("Version: {}\n", self.metadata.version));
+        }
+        if !self.metadata.author.is_empty() {
+            info.push_str(&format!("Author: {}\n", self.metadata.author));
+        }
+        if !self.metadata.tags.is_empty() {
+            info.push_str(&format!("Tags: {}\n", self.metadata.tags.join(", ")));
+        }
+        if let Some(ref source) = self.metadata.source {
+            info.push_str(&format!("Source: {}\n", source));
+        }
+        if let Some(ref license) = self.metadata.license {
+            info.push_str(&format!("License: {}\n", license));
+        }
+        info
+    }
 }
 
 #[derive(Debug, Default)]
@@ -83,6 +135,39 @@ impl SkillCatalog {
     pub fn skills(&self) -> Vec<Skill> {
         self.skills.values().cloned().collect()
     }
+
+    /// Search skills by tag.
+    pub fn by_tag(&self, tag: &str) -> Vec<&Skill> {
+        let tag_lower = tag.to_lowercase();
+        self.skills
+            .values()
+            .filter(|s| s.metadata.tags.iter().any(|t| t.to_lowercase() == tag_lower))
+            .collect()
+    }
+
+    /// Search skills by name or description.
+    pub fn search(&self, query: &str) -> Vec<&Skill> {
+        let query_lower = query.to_lowercase();
+        self.skills
+            .values()
+            .filter(|s| {
+                s.name.to_lowercase().contains(&query_lower)
+                    || s.description.to_lowercase().contains(&query_lower)
+                    || s.metadata.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
+            })
+            .collect()
+    }
+
+    /// Get all unique tags in the catalog.
+    pub fn all_tags(&self) -> Vec<String> {
+        let mut tags: BTreeSet<String> = BTreeSet::new();
+        for skill in self.skills.values() {
+            for tag in &skill.metadata.tags {
+                tags.insert(tag.clone());
+            }
+        }
+        tags.into_iter().collect()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -106,6 +191,14 @@ impl ActiveSkills {
     pub fn list(&self) -> Vec<String> {
         self.names.iter().cloned().collect()
     }
+
+    pub fn remove(&mut self, name: &str) {
+        self.names.remove(&name.to_lowercase());
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.names.contains(&name.to_lowercase())
+    }
 }
 
 pub fn decorate_user_text(
@@ -122,9 +215,10 @@ pub fn decorate_user_text(
         if let Some(skill) = catalog.get(&name) {
             let body: String = skill.content.chars().take(MAX_SKILL_CHARS).collect();
             sections.push(format!(
-                "## Skill: {}\nSource: {}\n\n{}",
+                "## Skill: {}\nSource: {}\nVersion: {}\n\n{}",
                 skill.name,
                 skill.path.display(),
+                skill.metadata.version.as_str(),
                 body
             ));
         }
@@ -163,6 +257,87 @@ pub fn install_skill_into_project(cwd: &Path, source: &Path) -> Result<Skill> {
     install_skill(source, &destination_root)
 }
 
+/// Install a skill from a git repository URL.
+pub async fn install_skill_from_git(
+    cwd: &Path,
+    git_url: &str,
+    name: Option<&str>,
+) -> Result<Skill> {
+    let destination_root = cwd.join(".pi").join("skills");
+    
+    // Clone to temp directory
+    let temp_dir = tempfile::tempdir()?;
+    let clone_path = temp_dir.path().join("skill");
+    
+    let output = tokio::process::Command::new("git")
+        .args(["clone", "--depth", "1", git_url, clone_path.to_str().unwrap()])
+        .output()
+        .await
+        .context("Failed to execute git clone")?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to clone repository: {}", stderr);
+    }
+    
+    // Find SKILL.md in cloned repo
+    let skill_file = if clone_path.join(SKILL_FILE_NAME).exists() {
+        clone_path.join(SKILL_FILE_NAME)
+    } else {
+        // Search for any SKILL.md
+        let mut found = None;
+        for entry in walkdir::WalkDir::new(&clone_path).max_depth(2) {
+            let entry = entry?;
+            if entry.file_name() == SKILL_FILE_NAME {
+                found = Some(entry.path().to_path_buf());
+                break;
+            }
+        }
+        found.context("No SKILL.md found in repository")?
+    };
+    
+    let mut skill = install_skill(&skill_file, &destination_root)?;
+    
+    // Override name if specified
+    if let Some(name) = name {
+        skill.name = name.to_string();
+        skill.metadata.name = name.to_string();
+    }
+    
+    // Set source in metadata
+    skill.metadata.source = Some(git_url.to_string());
+    
+    Ok(skill)
+}
+
+/// Install a skill from a remote URL (raw file).
+pub async fn install_skill_from_url(
+    cwd: &Path,
+    url: &str,
+    name: Option<&str>,
+) -> Result<Skill> {
+    let destination_root = cwd.join(".pi").join("skills");
+    
+    // Download skill file
+    let response = reqwest::get(url).await.context("Failed to download skill")?;
+    let content = response.text().await.context("Failed to read response")?;
+    
+    // Parse to get name
+    let (parsed_name, _, _) = parse_skill_content(Path::new("remote.md"), &content);
+    let skill_name = name.unwrap_or(&parsed_name);
+    
+    // Create directory and write file
+    let target_dir = destination_root.join(slugify(skill_name));
+    fs::create_dir_all(&target_dir)?;
+    let target_file = target_dir.join(SKILL_FILE_NAME);
+    fs::write(&target_file, content)?;
+    
+    // Parse the installed skill
+    let skill = parse_skill_file(&target_file)?.context("Failed to parse installed skill")?;
+    
+    Ok(skill)
+}
+
 fn install_skill(source: &Path, destination_root: &Path) -> Result<Skill> {
     let source_file = if source.is_dir() {
         source.join(SKILL_FILE_NAME)
@@ -189,7 +364,7 @@ fn install_skill(source: &Path, destination_root: &Path) -> Result<Skill> {
         anyhow::bail!("skill file is empty: {}", source_file.display());
     }
 
-    let (name, description, content) = parse_skill_content(&source_file, &raw);
+    let (name, description, content, metadata) = parse_skill_content_full(&source_file, &raw);
     let target_dir = destination_root.join(slugify(&name));
     fs::create_dir_all(&target_dir).with_context(|| {
         format!(
@@ -206,6 +381,7 @@ fn install_skill(source: &Path, destination_root: &Path) -> Result<Skill> {
         description,
         path: target_file,
         content,
+        metadata,
     })
 }
 
@@ -249,40 +425,74 @@ fn parse_skill_file(path: &Path) -> Result<Option<Skill>> {
         return Ok(None);
     }
 
-    let (name, description, content) = parse_skill_content(path, &raw);
+    let (name, description, content, metadata) = parse_skill_content_full(path, &raw);
     Ok(Some(Skill {
         name,
         description,
         path: path.to_path_buf(),
         content,
+        metadata,
     }))
 }
 
-fn parse_skill_content(path: &Path, raw: &str) -> (String, String, String) {
-    let mut name = String::new();
-    let mut description = String::new();
+/// Parse skill content with full YAML frontmatter support.
+fn parse_skill_content_full(
+    path: &Path,
+    raw: &str,
+) -> (String, String, String, SkillMetadata) {
+    let mut metadata = SkillMetadata::default();
     let mut body = raw.trim().to_string();
 
+    // Try to parse YAML frontmatter
     if let Some(rest) = raw.strip_prefix("---\n") {
         if let Some(end) = rest.find("\n---\n") {
             let fm = &rest[..end];
             body = rest[(end + 5)..].trim().to_string();
-            for line in fm.lines() {
-                if let Some((k, v)) = line.split_once(':') {
-                    let key = k.trim().to_lowercase();
-                    let value = v.trim().trim_matches('"').trim_matches('\'').to_string();
-                    match key.as_str() {
-                        "name" => name = value,
-                        "description" => description = value,
-                        _ => {}
+            
+            // Try full YAML parsing first
+            match serde_yaml::from_str::<SkillMetadata>(fm) {
+                Ok(parsed) => metadata = parsed,
+                Err(_) => {
+                    // Fallback to simple key:value parsing
+                    for line in fm.lines() {
+                        if let Some((k, v)) = line.split_once(':') {
+                            let key = k.trim().to_lowercase();
+                            let value = v.trim().trim_matches('"').trim_matches('\'').to_string();
+                            match key.as_str() {
+                                "name" => metadata.name = value,
+                                "description" => metadata.description = value,
+                                "version" => metadata.version = value,
+                                "author" => metadata.author = value,
+                                "license" => metadata.license = Some(value),
+                                "source" => metadata.source = Some(value),
+                                _ => {}
+                            }
+                        }
                     }
+                }
+            }
+            
+            // Parse tags if present as YAML list
+            if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(fm) {
+                if let Some(tags) = yaml.get("tags").and_then(|t| t.as_sequence()) {
+                    metadata.tags = tags
+                        .iter()
+                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                        .collect();
+                }
+                if let Some(deps) = yaml.get("dependencies").and_then(|d| d.as_sequence()) {
+                    metadata.dependencies = deps
+                        .iter()
+                        .filter_map(|d| d.as_str().map(|s| s.to_string()))
+                        .collect();
                 }
             }
         }
     }
 
-    if name.is_empty() {
-        name = path
+    // Fallback for name
+    if metadata.name.is_empty() {
+        metadata.name = path
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
@@ -294,11 +504,22 @@ fn parse_skill_content(path: &Path, raw: &str) -> (String, String, String) {
             })
             .unwrap_or_else(|| "unnamed-skill".to_string());
     }
-    if description.is_empty() {
-        description = name.clone();
-    }
+    
+    let name = metadata.name.clone();
+    let description = if metadata.description.is_empty() {
+        name.clone()
+    } else {
+        metadata.description.clone()
+    };
+    metadata.description = description.clone();
 
-    (name, description, body)
+    (name, description, body, metadata)
+}
+
+/// Legacy function for backward compatibility.
+fn parse_skill_content(path: &Path, raw: &str) -> (String, String, String) {
+    let (name, description, content, _) = parse_skill_content_full(path, raw);
+    (name, description, content)
 }
 
 fn slugify(name: &str) -> String {
@@ -421,10 +642,33 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn parse_yaml_frontmatter() {
+        let raw = r#"---
+name: rust-style
+description: Rust style guide
+version: "1.0.0"
+author: "Test Author"
+tags:
+  - rust
+  - style
+  - formatting
+---
+Use snake_case."#;
+        let path = PathBuf::from("/tmp/rust-style/SKILL.md");
+        let (name, description, body, metadata) = parse_skill_content_full(&path, raw);
+        assert_eq!(name, "rust-style");
+        assert_eq!(description, "Rust style guide");
+        assert_eq!(body, "Use snake_case.");
+        assert_eq!(metadata.version, "1.0.0");
+        assert_eq!(metadata.author, "Test Author");
+        assert_eq!(metadata.tags, vec!["rust", "style", "formatting"]);
+    }
+
+    #[test]
     fn parse_frontmatter_and_body() {
         let raw = "---\nname: rust-style\ndescription: Rust style guide\n---\nUse snake_case.";
         let path = PathBuf::from("/tmp/rust-style/SKILL.md");
-        let (name, description, body) = parse_skill_content(&path, raw);
+        let (name, description, body, _) = parse_skill_content_full(&path, raw);
         assert_eq!(name, "rust-style");
         assert_eq!(description, "Rust style guide");
         assert_eq!(body, "Use snake_case.");
@@ -434,7 +678,7 @@ mod tests {
     fn fallback_name_from_parent_dir() {
         let raw = "No frontmatter";
         let path = PathBuf::from("/tmp/code-review/SKILL.md");
-        let (name, description, body) = parse_skill_content(&path, raw);
+        let (name, description, body, _) = parse_skill_content_full(&path, raw);
         assert_eq!(name, "code-review");
         assert_eq!(description, "code-review");
         assert_eq!(body, "No frontmatter");
@@ -475,6 +719,7 @@ mod tests {
             description: "code review".to_string(),
             path: PathBuf::from("/tmp/review/SKILL.md"),
             content: "Prioritize high severity issues.".to_string(),
+            metadata: SkillMetadata::default(),
         });
         let mut active = ActiveSkills::default();
         active.set("review");
@@ -508,5 +753,53 @@ mod tests {
         assert!(installed.path.exists());
         let content = fs::read_to_string(&installed.path).unwrap();
         assert!(content.contains("Use idiomatic Rust."));
+    }
+
+    #[test]
+    fn test_search_skills() {
+        let mut catalog = SkillCatalog::default();
+        catalog.insert(Skill {
+            name: "rust-best-practices".to_string(),
+            description: "Best practices for Rust".to_string(),
+            path: PathBuf::from("/tmp/rust/SKILL.md"),
+            content: "Content".to_string(),
+            metadata: SkillMetadata {
+                tags: vec!["rust".to_string(), "best-practices".to_string()],
+                ..Default::default()
+            },
+        });
+        catalog.insert(Skill {
+            name: "python-style".to_string(),
+            description: "Python style guide".to_string(),
+            path: PathBuf::from("/tmp/python/SKILL.md"),
+            content: "Content".to_string(),
+            metadata: SkillMetadata {
+                tags: vec!["python".to_string()],
+                ..Default::default()
+            },
+        });
+
+        let results = catalog.search("rust");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "rust-best-practices");
+
+        let by_tag = catalog.by_tag("python");
+        assert_eq!(by_tag.len(), 1);
+        assert_eq!(by_tag[0].name, "python-style");
+    }
+
+    #[test]
+    fn test_active_skills() {
+        let mut active = ActiveSkills::default();
+        active.set("skill1");
+        active.set("skill2");
+        
+        assert!(active.has("skill1"));
+        assert!(active.has("Skill1")); // case insensitive
+        assert!(!active.has("skill3"));
+        
+        active.remove("skill1");
+        assert!(!active.has("skill1"));
+        assert_eq!(active.list().len(), 1);
     }
 }
