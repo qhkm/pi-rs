@@ -7,9 +7,9 @@
 
 ## Current Status
 
-**Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2, #7  
+**Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2, #7, #11  
 **In Progress:** None  
-**Remaining:** 7 items
+**Remaining:** 6 items
 
 ---
 
@@ -140,16 +140,33 @@ async fn merge_branched_tree_remaps_all_ids() {
 ## 🟢 MEDIUM PRIORITY
 
 ### #11: WASM Safety Hardening
-**Impact:** 3% | **File:** `crates/pi-coding-agent/src/extensions/wasm.rs`
+**Status:** ✅ COMPLETED in commit 11d5636
 
-**Current:** Basic fuel limit only  
-**Needed:**
-1. Instruction count limits (not just fuel)
-2. Memory bounds checking at offset 1024
-3. I/O timeout for WASM module stdio
-4. Stack depth limits
+**Implemented:**
+1. ✅ Instruction count limits via fuel metering (1 fuel ≈ 1 instruction)
+2. ✅ Memory bounds checking at configurable offset (default 1024)
+3. ✅ I/O timeout enforcement via epoch interruption + tokio timeout
+4. ✅ Stack depth limits via max_wasm_stack configuration
 
-**Code:** `WasmModule::execute()` around line 85+
+**Additional safety features:**
+- Configurable max_io_ops (default 10,000)
+- Configurable max_output_bytes (default 64KB)
+- Input size limit (1MB max)
+- Pointer alignment validation (4-byte aligned)
+- Null pointer validation
+- Memory bounds validation for all allocations
+
+**New config fields:**
+- `max_stack_depth`: Maximum WASM stack frames
+- `max_io_ops`: Maximum I/O operations per execution
+- `max_output_bytes`: Maximum output size in bytes
+- `memory_alloc_offset`: Minimum allocation offset
+
+**New tests (+4):**
+- `test_wasm_config_custom`
+- `test_wasm_memory_bounds_config`
+- `test_wasm_safety_limits`
+- `test_wasm_input_size_limit`
 
 ---
 
