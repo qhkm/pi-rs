@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use pi_agent_core::context::budget::TokenBudget;
 use pi_agent_core::context::compaction::CompactionSettings;
@@ -14,6 +14,7 @@ use pi_coding_agent::tools::operations::LocalFileOps;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let runtime_api_key = Arc::new(RwLock::new(args.api_key.clone()));
 
     // Initialize tracing
     if args.verbose {
@@ -53,11 +54,26 @@ async fn main() -> Result<()> {
     // Register default providers
     pi_ai::register_defaults();
 
-    // Provider is optional at startup - TUI will show error when user tries to send message
-    let provider = pi_ai::get_provider(provider_name);
+    // Provider is optional at startup. If the env-backed provider isn't available,
+    // bootstrap a local provider so runtime `/setkey` overrides can work without restart.
+    let provider_from_registry = pi_ai::get_provider(provider_name);
+    let mut provider = provider_from_registry.clone();
     if provider.is_none() {
-        eprintln!("Warning: Provider '{}' not available. Set the API key env var to enable.", provider_name);
+        let bootstrap_key = args.api_key.as_deref().unwrap_or("pi-runtime-key");
+        provider = build_fallback_provider(provider_name, bootstrap_key);
+    }
+
+    if provider.is_none() {
+        eprintln!(
+            "Warning: Provider '{}' not available. Set the API key env var to enable.",
+            provider_name
+        );
         eprintln!("You can still use the TUI, but you'll need to configure a provider before sending messages.");
+    } else if provider_from_registry.is_none() {
+        eprintln!(
+            "Info: Provider '{}' initialized without env credentials. Use --api-key or /setkey <key>.",
+            provider_name
+        );
     }
 
     let mut resolved_models = Vec::new();
@@ -72,20 +88,28 @@ async fn main() -> Result<()> {
             return Err(anyhow::anyhow!("Model '{}' not found", model_id));
         }
     }
-    
+
     // Use first resolved model, or a placeholder if none found
     let model = resolved_models.first().cloned().unwrap_or_else(|| {
         // Create a minimal placeholder model (when no provider configured)
         use pi_ai::models::registry::{InputType, ModelCost};
         pi_ai::Model {
-            id: model_ids.first().map(|s| s.clone()).unwrap_or_else(|| "unknown".to_string()),
+            id: model_ids
+                .first()
+                .map(|s| s.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
             name: "Unknown Model".to_string(),
             api: pi_ai::messages::types::Api::AnthropicMessages,
             provider: pi_ai::messages::types::Provider::Anthropic,
             base_url: "https://api.anthropic.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 100000,
             max_tokens: 4096,
             headers: None,
@@ -102,6 +126,16 @@ async fn main() -> Result<()> {
         _ => pi_ai::ThinkingLevel::Medium,
     });
 
+    let api_key_resolver = {
+        let runtime_api_key = Arc::clone(&runtime_api_key);
+        Some(Box::new(move || {
+            runtime_api_key
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }) as Box<dyn Fn() -> Option<String> + Send + Sync>)
+    };
+
     let config = AgentConfig {
         provider, // Optional - can be None if no API key set
         model,
@@ -112,7 +146,7 @@ async fn main() -> Result<()> {
         thinking_level,
         cwd: cwd.clone(),
         api_key_override: None,
-        api_key_resolver: None,
+        api_key_resolver,
         thinking_budgets: None,
         session_id: None,
         event_log_path: None,
@@ -214,10 +248,27 @@ async fn main() -> Result<()> {
     } else if args.mode == "rpc" {
         pi_coding_agent::modes::rpc::run_rpc_mode(Arc::clone(&agent)).await?;
     } else {
-        pi_coding_agent::modes::interactive::run_interactive_mode(Arc::clone(&agent)).await?;
+        pi_coding_agent::modes::interactive::run_interactive_mode(
+            Arc::clone(&agent),
+            Arc::clone(&runtime_api_key),
+        )
+        .await?;
     }
 
     Ok(())
+}
+
+fn build_fallback_provider(api: &str, bootstrap_key: &str) -> Option<Arc<dyn pi_ai::LLMProvider>> {
+    match api {
+        "anthropic-messages" => Some(Arc::new(pi_ai::AnthropicProvider::new(bootstrap_key, None))),
+        "openai-completions" => Some(Arc::new(pi_ai::OpenAIProvider::new(
+            bootstrap_key,
+            None,
+            pi_ai::OpenAICompat::default(),
+        ))),
+        "google-generative-ai" => Some(Arc::new(pi_ai::GoogleProvider::new(bootstrap_key, None))),
+        _ => None,
+    }
 }
 
 fn resolve_sessions_dir(args: &Args) -> PathBuf {

@@ -137,6 +137,7 @@ pi --rpc-server            # Start JSON-RPC server
 | `/thinking <level>` | Set thinking level |
 | `/settings` | Open settings |
 | `/export` | Export conversation |
+| `/setkey <api-key>` | Set runtime API key for current session |
 | `/help` | Show help |
 
 ## ⚙️ Configuration

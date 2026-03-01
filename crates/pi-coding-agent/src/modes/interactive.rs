@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use pi_agent_core::{Agent, AgentEvent};
@@ -32,6 +32,10 @@ impl Completer for CommandCompleter {
             "/skill:list",
             "/skill:clear",
             "/skill:install ",
+            "/setkey ",
+            "/apikey ",
+            "/providers",
+            "/provider ",
             "/quit",
             "exit",
         ];
@@ -60,18 +64,22 @@ impl Validator for CommandCompleter {}
 impl Helper for CommandCompleter {}
 
 /// Run in interactive TUI mode
-pub async fn run_interactive_mode(agent: Arc<Agent>) -> Result<()> {
+pub async fn run_interactive_mode(
+    agent: Arc<Agent>,
+    runtime_api_key: Arc<RwLock<Option<String>>>,
+) -> Result<()> {
     println!("pi interactive mode (type 'exit' or '/quit' to quit)");
+    println!("[auth] use /setkey <api-key> to set a runtime API key");
     println!("---");
 
     // Use a LocalSet so we can spawn non-Send futures
     let local = LocalSet::new();
 
-    local.run_until(repl_loop(agent)).await
+    local.run_until(repl_loop(agent, runtime_api_key)).await
 }
 
 /// The main REPL loop
-async fn repl_loop(agent: Arc<Agent>) -> Result<()> {
+async fn repl_loop(agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<String>>>) -> Result<()> {
     let mut catalog = crate::skills::SkillCatalog::discover(Path::new(&agent.config.cwd))?;
     let mut active_skills = crate::skills::ActiveSkills::default();
     if !catalog.is_empty() {
@@ -133,6 +141,55 @@ async fn repl_loop(agent: Arc<Agent>) -> Result<()> {
 
         if input == "exit" || input == "/quit" {
             break;
+        }
+        if input == "/setkey" || input == "/apikey" {
+            println!("[auth] usage: /setkey <api-key> (or /setkey clear)");
+            continue;
+        }
+        if let Some(raw) = input
+            .strip_prefix("/setkey ")
+            .or_else(|| input.strip_prefix("/apikey "))
+        {
+            let value = raw.trim();
+            if value.is_empty() {
+                println!("[auth] usage: /setkey <api-key> (or /setkey clear)");
+                continue;
+            }
+
+            if value.eq_ignore_ascii_case("clear") {
+                *runtime_api_key.write().unwrap_or_else(|e| e.into_inner()) = None;
+                println!("[auth] runtime API key cleared (falling back to provider defaults)");
+                continue;
+            }
+
+            *runtime_api_key.write().unwrap_or_else(|e| e.into_inner()) = Some(value.to_string());
+            println!("[auth] runtime API key set: {}", mask_secret(value));
+            
+            // Try to detect provider from key format
+            let detected = detect_provider_from_key(value);
+            println!("[auth] detected provider: {}. Restart with --provider {} to use it.", 
+                detected, detected);
+            continue;
+        }
+        if input == "/providers" {
+            print_available_providers();
+            continue;
+        }
+        if input == "/provider" {
+            println!("[provider] usage: /provider <name> (or /providers to list)");
+            println!("[provider] current: {} (restart with --provider <name> to change)", 
+                agent.config.model.provider);
+            continue;
+        }
+        if let Some(name) = input.strip_prefix("/provider ") {
+            let provider_name = name.trim();
+            if provider_name.is_empty() {
+                println!("[provider] usage: /provider <name> (or /providers to list)");
+            } else {
+                println!("[provider] to switch to '{}', restart with: pi --provider {}", 
+                    provider_name, provider_name);
+            }
+            continue;
         }
         if input.is_empty() {
             continue;
@@ -199,6 +256,17 @@ async fn repl_loop(agent: Arc<Agent>) -> Result<()> {
     let _ = readline_handle.await;
 
     Ok(())
+}
+
+fn mask_secret(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 8 {
+        return "*".repeat(chars.len().max(4));
+    }
+
+    let prefix: String = chars.iter().take(4).collect();
+    let suffix: String = chars.iter().skip(chars.len().saturating_sub(4)).collect();
+    format!("{prefix}***{suffix}")
 }
 
 fn print_skill_list(catalog: &crate::skills::SkillCatalog, active: &crate::skills::ActiveSkills) {
@@ -364,4 +432,36 @@ async fn handle_event(agent: &Agent, event: AgentEvent, done: &mut bool) -> Resu
     }
 
     Ok(())
+}
+
+/// Detect provider from API key format
+fn detect_provider_from_key(key: &str) -> &str {
+    if key.starts_with("sk-ant-") {
+        "anthropic"
+    } else if key.starts_with("sk-or-") {
+        "openrouter"
+    } else if key.starts_with("sk-proj-") || key.starts_with("sk-") && key.len() > 20 {
+        "openai"
+    } else if key.starts_with("gsk_") {
+        "groq"
+    } else if key.starts_with("AIza") {
+        "google"
+    } else {
+        "unknown (try: anthropic, openai, google, groq, openrouter)"
+    }
+}
+
+/// Print available providers
+fn print_available_providers() {
+    println!("[providers] available providers:");
+    println!("  anthropic   - Claude (ANTHROPIC_API_KEY)");
+    println!("  openai      - GPT-4, GPT-3.5 (OPENAI_API_KEY)");
+    println!("  google      - Gemini (GOOGLE_API_KEY)");
+    println!("  groq        - Llama, Mixtral (GROQ_API_KEY)");
+    println!("  openrouter  - Multi-provider (OPENROUTER_API_KEY)");
+    println!("  azure       - Azure OpenAI (AZURE_OPENAI_API_KEY)");
+    println!("  bedrock     - AWS Bedrock (AWS credentials)");
+    println!("");
+    println!("[providers] usage: pi --provider <name>");
+    println!("[providers] or: /provider <name> (shows restart command)");
 }

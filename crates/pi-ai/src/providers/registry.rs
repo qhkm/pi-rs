@@ -31,6 +31,13 @@ pub fn get_providers() -> Vec<(String, Arc<dyn LLMProvider>)> {
     guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
+/// Return the first available registered provider.
+/// Useful for auto-detecting which provider to use when none is specified.
+pub fn get_first_available_provider() -> Option<(String, Arc<dyn LLMProvider>)> {
+    let guard = REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+    guard.iter().next().map(|(k, v)| (k.clone(), v.clone()))
+}
+
 /// Remove the provider registered under `api`, if any.
 pub fn unregister_provider(api: &str) {
     let mut guard = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
