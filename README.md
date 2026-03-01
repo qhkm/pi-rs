@@ -311,6 +311,10 @@ This project is licensed under the [MIT License](LICENSE).
 - Built with [Tokio](https://tokio.rs), [Ratatui](https://github.com/ratatui-org/ratatui) concepts, and the Rust ecosystem
 - Thanks to all contributors
 
+## 🔗 Related Projects
+
+- **[ZeptoClaw](https://github.com/qhkm/zeptoclaw)** — Ultra-lightweight (~4MB) personal AI assistant with multi-channel gateway (Telegram, Slack, Discord), container isolation, and agent swarms. A good complement if you need a server-deployable AI gateway rather than a terminal coding agent.
+
 ---
 
 <div align="center">
