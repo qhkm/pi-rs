@@ -306,6 +306,7 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## 🙏 Acknowledgments
 
+- Based on [pi-mono](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/badlogic) — thank you for the original inspiration
 - Inspired by Claude Code and similar AI coding assistants
 - Built with [Tokio](https://tokio.rs), [Ratatui](https://github.com/ratatui-org/ratatui) concepts, and the Rust ecosystem
 - Thanks to all contributors
