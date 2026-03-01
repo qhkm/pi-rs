@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use glob::glob as glob_match;
 
 /// Result of processing user input for @file references.
 #[derive(Debug)]
@@ -21,13 +22,20 @@ pub struct ImageAttachment {
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp"];
 
+/// Maximum number of files that can be expanded from a single directory or glob reference.
+const MAX_EXPANSION_FILES: usize = 100;
+
 /// Process user input, expanding `@file` references.
 ///
 /// - `@path/to/file.txt` is read and wrapped in `<file name="...">...</file>` tags,
 ///   then prepended to the returned text.
 /// - `@"path with spaces/file.txt"` supports quoted paths with spaces.
 /// - `@path/to/image.png` is read as raw bytes and appended to the `images` list.
+/// - `@dirname/` (trailing slash) includes all files in the directory (non-recursive).
+/// - `@dirname/**/*.rs` expands glob patterns to matching files.
+/// - `@"path with spaces/"` supports quoted directory paths.
 /// - Paths are resolved relative to `cwd`.
+/// - Directory and glob expansions are limited to 100 files per reference.
 /// - If a referenced file does not exist, the `@reference` is kept as literal text.
 ///
 /// Returns the processed input with expanded text and extracted images.
@@ -114,7 +122,31 @@ pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
 }
 
 /// Process a single file reference (quoted or unquoted).
+///
+/// Dispatches to directory expansion, glob expansion, or single-file processing
+/// based on the reference pattern.
 fn process_file_ref(
+    file_ref: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    // Check if this is a directory reference (trailing slash)
+    if file_ref.ends_with('/') || file_ref.ends_with('\\') {
+        return process_directory_ref(file_ref, cwd, text_parts, images);
+    }
+
+    // Check if this is a glob pattern (contains * or ?)
+    if file_ref.contains('*') || file_ref.contains('?') {
+        return process_glob_ref(file_ref, cwd, text_parts, images);
+    }
+
+    // Otherwise, process as a single file
+    process_single_file_ref(file_ref, cwd, text_parts, images)
+}
+
+/// Process a single file reference (no glob, no directory).
+fn process_single_file_ref(
     file_ref: &str,
     cwd: &Path,
     text_parts: &mut Vec<String>,
@@ -149,7 +181,112 @@ fn process_file_ref(
             Err(e) => anyhow::bail!("Error reading file: {}", e),
         }
     }
-    
+
+    Ok(())
+}
+
+/// Expand a directory reference (trailing `/`) into individual file references.
+///
+/// Lists all files in the directory (non-recursive) and processes each one.
+/// Limited to `MAX_EXPANSION_FILES` files.
+fn process_directory_ref(
+    file_ref: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    let dir_path = resolve_file_path(file_ref, cwd);
+
+    if !dir_path.is_dir() {
+        anyhow::bail!("Directory not found: {}", file_ref);
+    }
+
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&dir_path)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            entries.push(path);
+        }
+    }
+
+    // Sort for deterministic output
+    entries.sort();
+
+    if entries.is_empty() {
+        anyhow::bail!("Directory is empty: {}", file_ref);
+    }
+
+    if entries.len() > MAX_EXPANSION_FILES {
+        anyhow::bail!(
+            "Directory {} contains {} files, exceeding the limit of {}. Use a glob pattern to narrow the selection.",
+            file_ref,
+            entries.len(),
+            MAX_EXPANSION_FILES
+        );
+    }
+
+    for path in entries {
+        // Build a display name relative to cwd
+        let display_name = path
+            .strip_prefix(cwd)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        process_single_file_ref(&display_name, cwd, text_parts, images)?;
+    }
+
+    Ok(())
+}
+
+/// Expand a glob pattern into individual file references.
+///
+/// The pattern is resolved relative to `cwd`. Limited to `MAX_EXPANSION_FILES` files.
+fn process_glob_ref(
+    file_ref: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    let pattern_path = if Path::new(file_ref).is_absolute() {
+        file_ref.to_string()
+    } else {
+        cwd.join(file_ref).to_string_lossy().to_string()
+    };
+
+    let mut matched_files: Vec<PathBuf> = Vec::new();
+    for entry in glob_match(&pattern_path)? {
+        let path = entry?;
+        if path.is_file() {
+            matched_files.push(path);
+        }
+    }
+
+    // Sort for deterministic output
+    matched_files.sort();
+
+    if matched_files.is_empty() {
+        anyhow::bail!("No files matched pattern: {}", file_ref);
+    }
+
+    if matched_files.len() > MAX_EXPANSION_FILES {
+        anyhow::bail!(
+            "Glob pattern {} matched {} files, exceeding the limit of {}. Use a more specific pattern.",
+            file_ref,
+            matched_files.len(),
+            MAX_EXPANSION_FILES
+        );
+    }
+
+    for path in matched_files {
+        let display_name = path
+            .strip_prefix(cwd)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        process_single_file_ref(&display_name, cwd, text_parts, images)?;
+    }
+
     Ok(())
 }
 
@@ -345,10 +482,269 @@ mod tests {
     fn test_quoted_image_path() {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("my image.png"), b"image data").unwrap();
-        
+
         let result = process_input("look at @\"my image.png\"", tmp.path()).unwrap();
         assert_eq!(result.images.len(), 1);
         assert_eq!(result.images[0].filename, "my image.png");
         assert_eq!(result.images[0].data, b"image data");
+    }
+
+    // ---- Directory expansion tests ----
+
+    #[test]
+    fn test_directory_expansion_trailing_slash() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("src");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("a.rs"), "fn a() {}").unwrap();
+        fs::write(sub.join("b.rs"), "fn b() {}").unwrap();
+        fs::write(sub.join("c.txt"), "hello").unwrap();
+
+        let result = process_input("review @src/", tmp.path()).unwrap();
+        assert!(result.text.contains("fn a() {}"));
+        assert!(result.text.contains("fn b() {}"));
+        assert!(result.text.contains("hello"));
+        // Should have 3 file tags
+        assert_eq!(result.text.matches("<file name=").count(), 3);
+    }
+
+    #[test]
+    fn test_directory_expansion_skips_subdirectories() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("mydir");
+        fs::create_dir_all(sub.join("nested")).unwrap();
+        fs::write(sub.join("top.txt"), "top level").unwrap();
+        fs::write(sub.join("nested").join("deep.txt"), "deep level").unwrap();
+
+        let result = process_input("@mydir/", tmp.path()).unwrap();
+        // Only the top-level file should be included (non-recursive)
+        assert!(result.text.contains("top level"));
+        assert!(!result.text.contains("deep level"));
+        assert_eq!(result.text.matches("<file name=").count(), 1);
+    }
+
+    #[test]
+    fn test_directory_expansion_sorted() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("sorted");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("c.txt"), "c").unwrap();
+        fs::write(sub.join("a.txt"), "a").unwrap();
+        fs::write(sub.join("b.txt"), "b").unwrap();
+
+        let result = process_input("@sorted/", tmp.path()).unwrap();
+        // Files should appear in sorted order: a.txt, b.txt, c.txt
+        let a_pos = result.text.find("a.txt").unwrap();
+        let b_pos = result.text.find("b.txt").unwrap();
+        let c_pos = result.text.find("c.txt").unwrap();
+        assert!(a_pos < b_pos);
+        assert!(b_pos < c_pos);
+    }
+
+    #[test]
+    fn test_directory_nonexistent_kept_as_text() {
+        let tmp = TempDir::new().unwrap();
+        let result = process_input("@nodir/", tmp.path()).unwrap();
+        assert!(result.text.contains("@nodir/"));
+    }
+
+    #[test]
+    fn test_directory_empty_kept_as_text() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("emptydir");
+        fs::create_dir(&sub).unwrap();
+
+        let result = process_input("@emptydir/", tmp.path()).unwrap();
+        // Empty directory should fail and be kept as literal text
+        assert!(result.text.contains("@emptydir/"));
+    }
+
+    #[test]
+    fn test_directory_with_images() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("assets");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("readme.txt"), "read me").unwrap();
+        fs::write(sub.join("icon.png"), b"png data").unwrap();
+
+        let result = process_input("@assets/", tmp.path()).unwrap();
+        assert!(result.text.contains("read me"));
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].data, b"png data");
+    }
+
+    // ---- Glob expansion tests ----
+
+    #[test]
+    fn test_glob_star_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("lib");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("foo.rs"), "fn foo() {}").unwrap();
+        fs::write(sub.join("bar.rs"), "fn bar() {}").unwrap();
+        fs::write(sub.join("data.txt"), "some data").unwrap();
+
+        let result = process_input("@lib/*.rs", tmp.path()).unwrap();
+        assert!(result.text.contains("fn foo() {}"));
+        assert!(result.text.contains("fn bar() {}"));
+        assert!(!result.text.contains("some data"));
+        assert_eq!(result.text.matches("<file name=").count(), 2);
+    }
+
+    #[test]
+    fn test_glob_recursive_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("project");
+        fs::create_dir_all(sub.join("src").join("models")).unwrap();
+        fs::write(sub.join("src").join("main.rs"), "fn main() {}").unwrap();
+        fs::write(sub.join("src").join("models").join("user.rs"), "struct User;").unwrap();
+        fs::write(sub.join("readme.txt"), "readme").unwrap();
+
+        let result = process_input("@project/**/*.rs", tmp.path()).unwrap();
+        assert!(result.text.contains("fn main() {}"));
+        assert!(result.text.contains("struct User;"));
+        assert!(!result.text.contains("readme"));
+        assert_eq!(result.text.matches("<file name=").count(), 2);
+    }
+
+    #[test]
+    fn test_glob_no_matches_kept_as_text() {
+        let tmp = TempDir::new().unwrap();
+        let result = process_input("@src/**/*.xyz", tmp.path()).unwrap();
+        assert!(result.text.contains("@src/**/*.xyz"));
+    }
+
+    #[test]
+    fn test_glob_question_mark_pattern() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a1.txt"), "one").unwrap();
+        fs::write(tmp.path().join("a2.txt"), "two").unwrap();
+        fs::write(tmp.path().join("ab.txt"), "three").unwrap();
+
+        let result = process_input("@a?.txt", tmp.path()).unwrap();
+        assert!(result.text.contains("one"));
+        assert!(result.text.contains("two"));
+        assert!(result.text.contains("three"));
+        assert_eq!(result.text.matches("<file name=").count(), 3);
+    }
+
+    #[test]
+    fn test_glob_sorted_output() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("c.rs"), "c").unwrap();
+        fs::write(tmp.path().join("a.rs"), "a").unwrap();
+        fs::write(tmp.path().join("b.rs"), "b").unwrap();
+
+        let result = process_input("@*.rs", tmp.path()).unwrap();
+        let a_pos = result.text.find("a.rs").unwrap();
+        let b_pos = result.text.find("b.rs").unwrap();
+        let c_pos = result.text.find("c.rs").unwrap();
+        assert!(a_pos < b_pos);
+        assert!(b_pos < c_pos);
+    }
+
+    #[test]
+    fn test_glob_with_images() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.png"), b"png a").unwrap();
+        fs::write(tmp.path().join("b.png"), b"png b").unwrap();
+        fs::write(tmp.path().join("c.txt"), "text c").unwrap();
+
+        let result = process_input("@*.png", tmp.path()).unwrap();
+        assert_eq!(result.images.len(), 2);
+        assert!(result.text.contains("review") == false); // no text files matched
+    }
+
+    // ---- Quoted directory/glob tests ----
+
+    #[test]
+    fn test_quoted_directory_path() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("my dir");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("file.txt"), "inside spaced dir").unwrap();
+
+        let result = process_input("check @\"my dir/\" please", tmp.path()).unwrap();
+        assert!(result.text.contains("inside spaced dir"));
+        assert!(result.text.contains("<file name="));
+    }
+
+    // ---- Max files limit tests ----
+
+    #[test]
+    fn test_directory_max_files_limit() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("bigdir");
+        fs::create_dir(&sub).unwrap();
+
+        // Create 101 files to exceed the limit
+        for i in 0..101 {
+            fs::write(sub.join(format!("file_{:03}.txt", i)), format!("content {}", i)).unwrap();
+        }
+
+        let result = process_input("@bigdir/", tmp.path()).unwrap();
+        // Should fail and be kept as literal text due to exceeding MAX_EXPANSION_FILES
+        assert!(result.text.contains("@bigdir/"));
+    }
+
+    #[test]
+    fn test_glob_max_files_limit() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("manyfiles");
+        fs::create_dir(&sub).unwrap();
+
+        for i in 0..101 {
+            fs::write(sub.join(format!("f_{:03}.txt", i)), format!("c {}", i)).unwrap();
+        }
+
+        let result = process_input("@manyfiles/*.txt", tmp.path()).unwrap();
+        // Should fail and be kept as literal text
+        assert!(result.text.contains("@manyfiles/*.txt"));
+    }
+
+    #[test]
+    fn test_directory_exactly_at_limit() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("exactdir");
+        fs::create_dir(&sub).unwrap();
+
+        // Create exactly MAX_EXPANSION_FILES files (100)
+        for i in 0..100 {
+            fs::write(sub.join(format!("f_{:03}.txt", i)), format!("c {}", i)).unwrap();
+        }
+
+        let result = process_input("@exactdir/", tmp.path()).unwrap();
+        // Should succeed since it's exactly at the limit
+        assert_eq!(result.text.matches("<file name=").count(), 100);
+    }
+
+    // ---- Mixed usage tests ----
+
+    #[test]
+    fn test_mixed_file_and_directory() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("src");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("lib.rs"), "fn lib() {}").unwrap();
+        fs::write(tmp.path().join("readme.txt"), "the readme").unwrap();
+
+        let result = process_input("@readme.txt and @src/", tmp.path()).unwrap();
+        assert!(result.text.contains("the readme"));
+        assert!(result.text.contains("fn lib() {}"));
+    }
+
+    #[test]
+    fn test_mixed_file_and_glob() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("src");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("main.rs"), "fn main() {}").unwrap();
+        fs::write(sub.join("lib.rs"), "fn lib() {}").unwrap();
+        fs::write(tmp.path().join("notes.txt"), "notes here").unwrap();
+
+        let result = process_input("@notes.txt and @src/*.rs", tmp.path()).unwrap();
+        assert!(result.text.contains("notes here"));
+        assert!(result.text.contains("fn main() {}"));
+        assert!(result.text.contains("fn lib() {}"));
     }
 }
