@@ -701,6 +701,21 @@ pub async fn execute_wrapper_hook(
         .ok_or_else(|| anyhow::anyhow!("No hook script specified"))?;
 
     let full_hook_path = extension_path.join(hook_path);
+    
+    // Validate hook path stays within extension directory (prevent path traversal)
+    let canonical_hook = full_hook_path.canonicalize().ok();
+    let canonical_ext = extension_path.canonicalize().ok();
+    
+    if let (Some(hook), Some(ext)) = (&canonical_hook, &canonical_ext) {
+        if !hook.starts_with(ext) {
+            anyhow::bail!("Wrapper hook path escapes extension directory");
+        }
+    }
+    
+    // Sanitize hook name to prevent traversal
+    if hook_path.contains("..") || hook_path.contains('/') || hook_path.contains('\\') {
+        anyhow::bail!("Invalid hook path: {}", hook_path);
+    }
 
     let context = serde_json::json!({
         "tool_name": tool_name,

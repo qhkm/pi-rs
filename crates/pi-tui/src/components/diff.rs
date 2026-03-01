@@ -473,17 +473,19 @@ impl Component for Diff {
 
 /// Wrap a line to fit within max_width.
 fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
-    if line.len() <= max_width {
+    let char_count = line.chars().count();
+    if char_count <= max_width {
         return vec![line.to_string()];
     }
 
     let mut result = Vec::new();
-    let mut start = 0;
+    let mut chars = line.chars();
     
-    while start < line.len() {
-        let end = (start + max_width).min(line.len());
-        result.push(line[start..end].to_string());
-        start = end;
+    while result.len() * max_width < char_count {
+        let chunk: String = chars.by_ref().take(max_width).collect();
+        if !chunk.is_empty() {
+            result.push(chunk);
+        }
     }
 
     result
