@@ -232,14 +232,14 @@
 | Agent Core | 20% | 100% | 20.0% |
 | Tools | 10% | 100% | 10.0% |
 | Modes | 10% | 100% | 10.0% |
-| Session Management | 8% | 100% | 8.0% |
+| Session Management | 8% | 90% | 7.2% |
 | Context & Config | 7% | 100% | 7.0% |
-| Extensions/Plugins | 8% | 100% | 8.0% |
+| Extensions/Plugins | 8% | 90% | 7.2% |
 | Skills | 5% | 100% | 5.0% |
-| Interactive TUI | 10% | 100% | 10.0% |
+| Interactive TUI | 10% | 95% | 9.5% |
 | Authentication | 4% | 100% | 4.0% |
-| Peripheral (mom/pods/web) | 3% | 100% | 3.0% |
-| **Total** | **100%** | — | **~95%** |
+| Peripheral (mom/pods/web) | 3% | 15% | 0.5% |
+| **Total** | **100%** | — | **95.4%** |
 
 ---
 
