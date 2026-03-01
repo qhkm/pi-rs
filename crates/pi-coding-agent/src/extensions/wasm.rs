@@ -82,7 +82,14 @@ impl WasmModule {
         engine_config.consume_fuel(true);
 
         // Limit the WASM stack depth to prevent stack-overflow attacks.
-        engine_config.max_wasm_stack(Self::MAX_WASM_STACK);
+        // Convert the config's "frames" value into an approximate byte budget.
+        // We calibrate against the historical default (1000 frames ~= 512 KiB).
+        let bytes_per_frame = (Self::MAX_WASM_STACK / 1000).max(1);
+        let configured_stack = usize::try_from(config.max_stack_depth)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(bytes_per_frame);
+        let stack_limit_bytes = configured_stack.max(64 * 1024);
+        engine_config.max_wasm_stack(stack_limit_bytes);
 
         // Enable epoch interruption for I/O timeout enforcement
         engine_config.epoch_interruption(true);
@@ -153,10 +160,13 @@ impl WasmModule {
         use wasmtime::{Store, TypedFunc};
         use std::time::Instant;
 
-        // Create WASI context
-        let wasi_ctx = wasmtime_wasi::WasiCtxBuilder::new()
-            .inherit_stdio()
-            .build();
+        // Create WASI context. When disabled, use an empty context and avoid
+        // wiring WASI imports into the linker below.
+        let mut wasi_builder = wasmtime_wasi::WasiCtxBuilder::new();
+        if self.config.enable_wasi {
+            wasi_builder.inherit_stdio();
+        }
+        let wasi_ctx = wasi_builder.build();
 
         let max_memory_bytes = (self.config.max_memory_mb as usize) * 1024 * 1024;
         let state = StoreState {
@@ -180,10 +190,12 @@ impl WasmModule {
         // Set epoch deadline for I/O timeout enforcement
         store.set_epoch_deadline(self.config.timeout_secs);
 
-        // Create linker and add WASI -- extract the WasiCtx from our StoreState.
+        // Create linker and add WASI only when enabled.
         let mut linker = wasmtime::Linker::new(&self.engine);
-        wasmtime_wasi::add_to_linker(&mut linker, |state: &mut StoreState| &mut state.wasi)
-            .context("Failed to add WASI to linker")?;
+        if self.config.enable_wasi {
+            wasmtime_wasi::add_to_linker(&mut linker, |state: &mut StoreState| &mut state.wasi)
+                .context("Failed to add WASI to linker")?;
+        }
 
         // Instantiate the module
         let instance = linker.instantiate(&mut store, &self.module)
@@ -263,7 +275,12 @@ impl WasmModule {
         // Read output from memory with bounds checking
         let mut output_bytes = Vec::new();
         let mut offset = output_ptr as usize;
-        let max_output = self.config.max_output_bytes;
+        // Respect the configured output limit while clamping to a sane ceiling.
+        let max_output = self
+            .config
+            .max_output_bytes
+            .max(1)
+            .min(Self::MAX_OUTPUT_BYTES.saturating_mul(16));
 
         // Safety check: ensure we don't read beyond memory bounds
         if output_ptr > 0 && (output_ptr as usize) < memory_size {

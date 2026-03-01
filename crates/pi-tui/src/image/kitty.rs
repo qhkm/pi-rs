@@ -347,8 +347,8 @@ impl KittyRenderer {
             result.push_str(&format!(",f={fmt}"));
         }
 
-        result.push_str(",m=1"); // More data follows (base64)
-        result.push('=');
+        result.push_str(",m=0"); // Single payload in this command
+        result.push(';');
         result.push_str(&encoded);
         result.push_str("\x1b\\");
 
@@ -397,8 +397,8 @@ impl KittyRenderer {
             result.push_str(",m=1");
         }
 
-        // Data
-        result.push('=');
+        // Data payload separator
+        result.push(';');
         result.push_str(data);
 
         // APC end: ESC \
@@ -546,6 +546,7 @@ mod tests {
         assert!(seq.contains("i=")); // Image ID
         assert!(seq.contains("c=80")); // Columns
         assert!(seq.contains("r=24")); // Rows
+        assert!(seq.contains(';')); // Control-data / payload separator
         assert!(seq.contains("\x1b\\")); // APC end
     }
 
@@ -603,6 +604,8 @@ mod tests {
         assert!(seq.contains("a=T"));
         assert!(seq.contains("p=1"));
         assert!(seq.contains("z=-1"));
+        assert!(seq.contains("m=0"));
+        assert!(seq.contains(';'));
     }
 
     #[test]

@@ -533,7 +533,15 @@ impl SessionManager {
         // Walk the ancestor chain from entry_id up to the root.
         let mut path_ids: Vec<String> = Vec::new();
         let mut cursor = Some(entry_id.to_string());
+        let mut visited = HashSet::new();
         while let Some(current) = cursor {
+            if !visited.insert(current.clone()) {
+                anyhow::bail!(
+                    "Cycle detected in session tree while navigating to '{}': repeated ancestor '{}'",
+                    entry_id,
+                    current
+                );
+            }
             path_ids.push(current.clone());
             cursor = parent_of.get(&current).and_then(|p| p.clone());
         }
@@ -1043,7 +1051,7 @@ impl SessionManager {
                         "_malformed": true,
                         "_malformed_original": line.to_string(),
                         "message": {
-                            "type": "system_context",
+                            "kind": "system_context",
                             "content": format!("[migration] malformed entry preserved: {}", line),
                             "source": "migration"
                         }
@@ -2126,6 +2134,51 @@ mod tests {
             .await
             .expect_err("should fail");
         assert!(err.to_string().contains("not found in session"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// `navigate_to` must fail (not hang) when a cycle exists in the ancestor chain.
+    #[tokio::test]
+    async fn navigate_to_errors_on_cycle() {
+        let dir = temp_dir("nav-cycle");
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        let header = SessionHeader::new("nav-cycle-test".to_string(), "/tmp".to_string());
+        let m1 = SessionEntry::Message {
+            id: "m1".to_string(),
+            parent_id: Some("m2".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("one")),
+        };
+        let m2 = SessionEntry::Message {
+            id: "m2".to_string(),
+            parent_id: Some("m1".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("two")),
+        };
+
+        let path = dir.join("nav-cycle.jsonl");
+        let content = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&header).unwrap(),
+            serde_json::to_string(&m1).unwrap(),
+            serde_json::to_string(&m2).unwrap()
+        );
+        fs::write(&path, content).expect("write session");
+
+        let mut manager = SessionManager::new(dir.clone());
+        manager.load_session(&path).await.expect("load session");
+
+        let err = manager
+            .navigate_to("m1")
+            .await
+            .expect_err("navigate_to should fail on cycle");
+        assert!(
+            err.to_string().contains("Cycle detected"),
+            "expected cycle error, got: {}",
+            err
+        );
 
         fs::remove_dir_all(dir).ok();
     }
@@ -3298,6 +3351,7 @@ this-is-not-json
         let wrapped: serde_json::Value =
             serde_json::from_str(lines[1]).expect("wrapped entry should be valid json");
         assert_eq!(wrapped["type"], "message");
+        assert_eq!(wrapped["message"]["kind"], "system_context");
         assert!(wrapped["_malformed_original"]
             .as_str()
             .unwrap()

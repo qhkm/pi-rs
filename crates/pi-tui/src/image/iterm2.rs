@@ -137,7 +137,7 @@ impl Iterm2Renderer {
         // Add size parameter for file size hint (helps terminal pre-allocate)
         params.push(format!("size={}", data.len()));
 
-        sequence.push_str(&params.join(":"));
+        sequence.push_str(&params.join(";"));
         sequence.push(':');
 
         // Add base64 encoded image data
@@ -191,7 +191,7 @@ impl Iterm2Renderer {
 
         params.push(format!("size={}", data.len()));
 
-        sequence.push_str(&params.join(":"));
+        sequence.push_str(&params.join(";"));
         sequence.push(':');
         sequence.push_str(&encoded);
         sequence.push('\x07');
@@ -371,6 +371,7 @@ mod tests {
         let seq = result.unwrap();
         assert!(seq.starts_with("\x1b]1337;File="));
         assert!(seq.contains("inline=1"));
+        assert!(seq.contains("inline=1;"));
         assert!(seq.contains("width=80"));
         assert!(seq.contains("height=24"));
         assert!(seq.ends_with('\x07'));

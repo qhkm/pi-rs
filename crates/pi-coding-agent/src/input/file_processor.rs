@@ -44,45 +44,34 @@ pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
     let mut images: Vec<ImageAttachment> = Vec::new();
     let mut remaining_text_parts: Vec<String> = Vec::new();
 
-    // First, process quoted references @"..."
-    let mut processed = input.to_string();
-    let mut found_quoted = true;
-    
-    while found_quoted {
-        found_quoted = false;
-        if let Some(start) = processed.find('@') {
-            if processed.chars().nth(start + 1) == Some('"') {
-                if let Some(end) = processed[start + 2..].find('"') {
-                    let end = start + 2 + end;
-                    let quoted_ref = &processed[start + 2..end];
-                    let before = &processed[..start];
-                    let after = &processed[end + 1..];
-                    
-                    if let Ok(()) = process_file_ref(quoted_ref, cwd, &mut text_parts, &mut images) {
-                        // File processed successfully
-                        if !before.trim().is_empty() {
-                            remaining_text_parts.push(before.trim().to_string());
-                        }
-                        if !after.trim().is_empty() {
-                            remaining_text_parts.push(after.trim().to_string());
-                        }
-                        processed = String::new();
-                        found_quoted = true;
-                        break;
-                    } else {
-                        // File doesn't exist - keep as literal, mark as processed
-                        processed = format!("{}@\"{}\"{}", before, quoted_ref, after);
-                        // Skip this reference for the next loop
-                        processed = processed.replacen("@\"", "@@\"", 1);
-                    }
-                }
+    // First, process quoted references @"..." across the entire input.
+    // Successful expansions are removed from the remaining text; unresolved
+    // quoted refs are kept literally for the fallback pass.
+    let mut processed = String::with_capacity(input.len());
+    let mut scan_idx = 0usize;
+    while let Some(rel_start) = input[scan_idx..].find("@\"") {
+        let start = scan_idx + rel_start;
+        processed.push_str(&input[scan_idx..start]);
+
+        let quoted_start = start + 2;
+        if let Some(rel_end) = input[quoted_start..].find('"') {
+            let quoted_end = quoted_start + rel_end;
+            let quoted_ref = &input[quoted_start..quoted_end];
+
+            if process_file_ref(quoted_ref, cwd, &mut text_parts, &mut images).is_err() {
+                // Keep unresolved quoted reference as literal text.
+                processed.push_str(&input[start..=quoted_end]);
             }
+            scan_idx = quoted_end + 1;
+        } else {
+            // Unterminated quote: preserve the rest as-is.
+            processed.push_str(&input[start..]);
+            scan_idx = input.len();
+            break;
         }
     }
-    
-    // Restore @@ to @ for unmatched references
-    processed = processed.replace("@@", "@");
-    
+    processed.push_str(&input[scan_idx..]);
+
     // Process remaining unquoted references
     let mut final_remaining = String::new();
     
@@ -336,17 +325,17 @@ fn process_glob(
     images: &mut Vec<ImageAttachment>,
 ) -> anyhow::Result<()> {
     use glob::glob;
-    
-    let mut found_any = false;
+
+    let mut matched_files: Vec<PathBuf> = Vec::new();
     let mut errors = Vec::new();
-    
+
     // Resolve pattern relative to cwd if it's not absolute
     let pattern = if Path::new(pattern).is_absolute() {
         pattern.to_string()
     } else {
         format!("{}/{}", cwd.display(), pattern)
     };
-    
+
     // Try to match the pattern
     match glob(&pattern) {
         Ok(paths) => {
@@ -354,13 +343,7 @@ fn process_glob(
                 match entry {
                     Ok(path) => {
                         if path.is_file() {
-                            // Get relative path for display
-                            let file_ref = path.to_string_lossy().to_string();
-                            if let Err(e) = process_single_file(&path, &file_ref, text_parts, images) {
-                                errors.push(format!("{}: {}", file_ref, e));
-                            } else {
-                                found_any = true;
-                            }
+                            matched_files.push(path);
                         }
                     }
                     Err(e) => {
@@ -373,15 +356,49 @@ fn process_glob(
             anyhow::bail!("Invalid glob pattern '{}': {}", pattern, e);
         }
     }
-    
-    if !found_any {
+
+    // Sort for deterministic output.
+    matched_files.sort();
+
+    if matched_files.is_empty() {
         if errors.is_empty() {
             anyhow::bail!("No files matched pattern: {}", pattern);
         } else {
             anyhow::bail!("Failed to process glob pattern '{}': {}", pattern, errors.join(", "));
         }
     }
-    
+
+    if matched_files.len() > MAX_EXPANSION_FILES {
+        anyhow::bail!(
+            "Glob pattern {} matched {} files, exceeding the limit of {}. Use a more specific pattern.",
+            pattern,
+            matched_files.len(),
+            MAX_EXPANSION_FILES
+        );
+    }
+
+    let mut processed_any = false;
+    for path in matched_files {
+        let file_ref = path
+            .strip_prefix(cwd)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        if let Err(e) = process_single_file(&path, &file_ref, text_parts, images) {
+            errors.push(format!("{}: {}", file_ref, e));
+        } else {
+            processed_any = true;
+        }
+    }
+
+    if !processed_any {
+        anyhow::bail!(
+            "Failed to process glob pattern '{}': {}",
+            pattern,
+            errors.join(", ")
+        );
+    }
+
     Ok(())
 }
 
@@ -584,6 +601,34 @@ mod tests {
         assert_eq!(result.images[0].data, b"image data");
     }
 
+    #[test]
+    fn test_multiple_quoted_references_expand_all() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("first file.txt"), "first").unwrap();
+        fs::write(tmp.path().join("second file.txt"), "second").unwrap();
+
+        let result = process_input(
+            "combine @\"first file.txt\" and @\"second file.txt\"",
+            tmp.path(),
+        )
+        .unwrap();
+
+        assert!(result.text.contains("first"));
+        assert!(result.text.contains("second"));
+        assert!(result.text.contains("combine"));
+        assert!(result.text.contains("and"));
+    }
+
+    #[test]
+    fn test_quoted_reference_after_unquoted_token() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("exists file.txt"), "ok").unwrap();
+
+        let result = process_input("@missing @\"exists file.txt\"", tmp.path()).unwrap();
+        assert!(result.text.contains("@missing"));
+        assert!(result.text.contains("ok"));
+    }
+
     // ---- Directory expansion tests ----
 
     #[test]
@@ -780,6 +825,21 @@ mod tests {
         let result = process_input("@bigdir/", tmp.path()).unwrap();
         // Should fail and be kept as literal text due to exceeding MAX_EXPANSION_FILES
         assert!(result.text.contains("@bigdir/"));
+    }
+
+    #[test]
+    fn test_directory_without_trailing_slash_respects_limit() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("bigdir");
+        fs::create_dir(&sub).unwrap();
+
+        for i in 0..101 {
+            fs::write(sub.join(format!("file_{:03}.txt", i)), format!("content {}", i)).unwrap();
+        }
+
+        let result = process_input("@bigdir", tmp.path()).unwrap();
+        assert!(result.text.contains("@bigdir"));
+        assert_eq!(result.text.matches("<file name=").count(), 0);
     }
 
     #[test]
