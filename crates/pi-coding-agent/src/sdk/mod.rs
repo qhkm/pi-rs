@@ -155,7 +155,7 @@ impl AgentSession {
 
         // Build AgentConfig.
         let config = AgentConfig {
-            provider,
+            provider: Some(provider),
             model,
             system_prompt: Some(system_prompt),
             max_turns: options.max_turns,

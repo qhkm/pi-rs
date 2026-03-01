@@ -665,7 +665,7 @@ impl Agent {
         };
 
         // Spawn the streaming task
-        let provider = self.config.provider.clone();
+        let provider = self.config.provider.clone().ok_or(AgentError::NoProvider)?;
         let model = self.current_model.read().await.clone();
         let context_clone = context.clone();
         let stream_handle = tokio::spawn(async move {
@@ -1058,12 +1058,19 @@ impl Agent {
         });
 
         let model = self.current_model.read().await.clone();
-        let summary_msg = self
-            .config
-            .provider
+        let provider = self.config.provider.clone().ok_or_else(|| {
+            self.emit(AgentEvent::AutoCompactionEnd {
+                success: false,
+                tokens_before,
+                tokens_after: None,
+                error: Some("No provider configured".to_string()),
+            });
+            AgentError::Compaction("No provider configured".to_string())
+        })?;
+        let summary_msg = provider
             .complete(&model, &summary_context, &options)
             .await
-            .map_err(|e| {
+            .map_err(|e: pi_ai::PiAiError| {
                 self.emit(AgentEvent::AutoCompactionEnd {
                     success: false,
                     tokens_before,

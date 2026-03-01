@@ -38,9 +38,9 @@ pub fn default_thinking_budgets() -> HashMap<ThinkingLevel, u64> {
 
 /// Configuration for creating an Agent
 pub struct AgentConfig {
-    /// The LLM provider to use
-    pub provider: Arc<dyn LLMProvider>,
-    /// The model to use
+    /// The LLM provider to use (None = not configured yet, will show error in TUI)
+    pub provider: Option<Arc<dyn LLMProvider>>,
+    /// The model to use (placeholder used if provider not configured)
     pub model: Model,
     /// System prompt
     pub system_prompt: Option<String>,

@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
     );
 
     // Resolve provider and model(s)
+    // Allow starting without a provider configured - will show error in TUI when user tries to send a message
     let provider_name = resolve_provider_name(args.provider.as_deref().unwrap_or("anthropic"));
     let model_ids: Vec<String> = if !args.models.is_empty() {
         args.models.clone()
@@ -52,20 +53,44 @@ async fn main() -> Result<()> {
     // Register default providers
     pi_ai::register_defaults();
 
-    let provider = pi_ai::get_provider(provider_name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Provider '{}' not available. Set the API key env var (e.g. ANTHROPIC_API_KEY).",
-            provider_name
-        )
-    })?;
+    // Provider is optional at startup - TUI will show error when user tries to send message
+    let provider = pi_ai::get_provider(provider_name);
+    if provider.is_none() {
+        eprintln!("Warning: Provider '{}' not available. Set the API key env var to enable.", provider_name);
+        eprintln!("You can still use the TUI, but you'll need to configure a provider before sending messages.");
+    }
 
     let mut resolved_models = Vec::new();
     for model_id in &model_ids {
-        let model = pi_ai::find_model(model_id)
-            .ok_or_else(|| anyhow::anyhow!("Model '{}' not found", model_id))?;
-        resolved_models.push(model);
+        if let Some(model) = pi_ai::find_model(model_id) {
+            resolved_models.push(model);
+        } else if provider.is_none() {
+            // Use a placeholder model if no provider and model not found
+            // This allows TUI to start even without proper configuration
+            continue;
+        } else {
+            return Err(anyhow::anyhow!("Model '{}' not found", model_id));
+        }
     }
-    let model = resolved_models[0].clone();
+    
+    // Use first resolved model, or a placeholder if none found
+    let model = resolved_models.first().cloned().unwrap_or_else(|| {
+        // Create a minimal placeholder model (when no provider configured)
+        use pi_ai::models::registry::{InputType, ModelCost};
+        pi_ai::Model {
+            id: model_ids.first().map(|s| s.clone()).unwrap_or_else(|| "unknown".to_string()),
+            name: "Unknown Model".to_string(),
+            api: pi_ai::messages::types::Api::AnthropicMessages,
+            provider: pi_ai::messages::types::Provider::Anthropic,
+            base_url: "https://api.anthropic.com".to_string(),
+            reasoning: false,
+            input_types: vec![InputType::Text],
+            cost: ModelCost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
+            context_window: 100000,
+            max_tokens: 4096,
+            headers: None,
+        }
+    });
 
     // Parse thinking level
     let thinking_level = args.thinking.as_deref().map(|s| match s {
@@ -78,7 +103,7 @@ async fn main() -> Result<()> {
     });
 
     let config = AgentConfig {
-        provider,
+        provider, // Optional - can be None if no API key set
         model,
         system_prompt: Some(system_prompt),
         max_turns: 50,
