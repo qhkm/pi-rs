@@ -114,22 +114,52 @@ pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
 }
 
 /// Process a single file reference (quoted or unquoted).
+/// Supports:
+/// - @file.txt → single file
+/// - @dir/ → all files in directory (non-recursive)
+/// - @dir/**/*.rs → glob pattern expansion
 fn process_file_ref(
     file_ref: &str,
     cwd: &Path,
     text_parts: &mut Vec<String>,
     images: &mut Vec<ImageAttachment>,
 ) -> anyhow::Result<()> {
+    // Check if it's a directory reference (ends with /)
+    if file_ref.ends_with('/') || file_ref.ends_with("\\") {
+        let dir_path = resolve_file_path(file_ref.trim_end_matches(|c| c == '/' || c == '\\'), cwd);
+        return process_directory(&dir_path, "*", cwd, text_parts, images);
+    }
+    
+    // Check if it's a glob pattern (contains ** or * or ?)
+    if file_ref.contains("**") || file_ref.contains('*') || file_ref.contains('?') {
+        return process_glob(file_ref, cwd, text_parts, images);
+    }
+
     let path = resolve_file_path(file_ref, cwd);
+
+    // Check if it's actually a directory
+    if path.is_dir() {
+        return process_directory(&path, "*", cwd, text_parts, images);
+    }
 
     if !path.exists() {
         anyhow::bail!("File not found: {}", file_ref);
     }
 
-    if is_image_file(&path) {
-        match std::fs::read(&path) {
+    process_single_file(&path, file_ref, text_parts, images)
+}
+
+/// Process a single file (file must exist and be readable).
+fn process_single_file(
+    path: &Path,
+    file_ref: &str,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    if is_image_file(path) {
+        match std::fs::read(path) {
             Ok(data) => {
-                let mime = mime_type_for_path(&path);
+                let mime = mime_type_for_path(path);
                 images.push(ImageAttachment {
                     data,
                     mime_type: mime,
@@ -139,7 +169,7 @@ fn process_file_ref(
             Err(e) => anyhow::bail!("Error reading image: {}", e),
         }
     } else {
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(content) => {
                 text_parts.push(format!(
                     "<file name=\"{}\">\n{}\n</file>",
@@ -147,6 +177,83 @@ fn process_file_ref(
                 ));
             }
             Err(e) => anyhow::bail!("Error reading file: {}", e),
+        }
+    }
+    
+    Ok(())
+}
+
+/// Process a directory, optionally with a glob pattern.
+fn process_directory(
+    dir_path: &Path,
+    pattern: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    if !dir_path.exists() {
+        anyhow::bail!("Directory not found: {}", dir_path.display());
+    }
+    
+    if !dir_path.is_dir() {
+        anyhow::bail!("Not a directory: {}", dir_path.display());
+    }
+
+    let glob_pattern = format!("{}/{}", dir_path.display(), pattern);
+    process_glob(&glob_pattern, cwd, text_parts, images)
+}
+
+/// Process a glob pattern and expand all matching files.
+fn process_glob(
+    pattern: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    use glob::glob;
+    
+    let mut found_any = false;
+    let mut errors = Vec::new();
+    
+    // Resolve pattern relative to cwd if it's not absolute
+    let pattern = if Path::new(pattern).is_absolute() {
+        pattern.to_string()
+    } else {
+        format!("{}/{}", cwd.display(), pattern)
+    };
+    
+    // Try to match the pattern
+    match glob(&pattern) {
+        Ok(paths) => {
+            for entry in paths {
+                match entry {
+                    Ok(path) => {
+                        if path.is_file() {
+                            // Get relative path for display
+                            let file_ref = path.to_string_lossy().to_string();
+                            if let Err(e) = process_single_file(&path, &file_ref, text_parts, images) {
+                                errors.push(format!("{}: {}", file_ref, e));
+                            } else {
+                                found_any = true;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("Glob error: {}", e));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Invalid glob pattern '{}': {}", pattern, e);
+        }
+    }
+    
+    if !found_any {
+        if errors.is_empty() {
+            anyhow::bail!("No files matched pattern: {}", pattern);
+        } else {
+            anyhow::bail!("Failed to process glob pattern '{}': {}", pattern, errors.join(", "));
         }
     }
     
@@ -350,5 +457,114 @@ mod tests {
         assert_eq!(result.images.len(), 1);
         assert_eq!(result.images[0].filename, "my image.png");
         assert_eq!(result.images[0].data, b"image data");
+    }
+
+    // -----------------------------------------------------------------------
+    // Directory and glob expansion tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_directory_expansion() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        
+        fs::write(subdir.join("file1.txt"), "content 1").unwrap();
+        fs::write(subdir.join("file2.txt"), "content 2").unwrap();
+        
+        let result = process_input("@subdir/", tmp.path()).unwrap();
+        
+        // Should include both files
+        assert!(result.text.contains("content 1"), "Should include file1.txt");
+        assert!(result.text.contains("content 2"), "Should include file2.txt");
+        assert!(result.text.contains("<file name=\""));
+    }
+
+    #[test]
+    fn test_glob_pattern_expansion() {
+        let tmp = TempDir::new().unwrap();
+        
+        fs::write(tmp.path().join("a.rs"), "rust a").unwrap();
+        fs::write(tmp.path().join("b.rs"), "rust b").unwrap();
+        fs::write(tmp.path().join("c.txt"), "text c").unwrap(); // Should NOT match
+        
+        let result = process_input("@*.rs", tmp.path()).unwrap();
+        
+        assert!(result.text.contains("rust a"), "Should include a.rs");
+        assert!(result.text.contains("rust b"), "Should include b.rs");
+        assert!(!result.text.contains("text c"), "Should NOT include c.txt");
+    }
+
+    #[test]
+    fn test_recursive_glob_expansion() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("src");
+        fs::create_dir(&subdir).unwrap();
+        let nested = subdir.join("nested");
+        fs::create_dir(&nested).unwrap();
+        
+        fs::write(subdir.join("top.rs"), "top level").unwrap();
+        fs::write(nested.join("deep.rs"), "deep nested").unwrap();
+        fs::write(tmp.path().join("root.rs"), "root level").unwrap();
+        
+        let result = process_input("@**/*.rs", tmp.path()).unwrap();
+        
+        assert!(result.text.contains("top level"), "Should include src/top.rs");
+        assert!(result.text.contains("deep nested"), "Should include src/nested/deep.rs");
+        assert!(result.text.contains("root level"), "Should include root.rs");
+    }
+
+    #[test]
+    fn test_quoted_directory_path() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("my dir"); // Directory with space
+        fs::create_dir(&subdir).unwrap();
+        
+        fs::write(subdir.join("file.txt"), "spaced dir content").unwrap();
+        
+        let result = process_input("@\"my dir/\"", tmp.path()).unwrap();
+        
+        assert!(result.text.contains("spaced dir content"), "Should handle quoted directory with spaces");
+    }
+
+    #[test]
+    fn test_directory_not_found_kept_as_text() {
+        let tmp = TempDir::new().unwrap();
+        
+        let result = process_input("@nonexistent/", tmp.path()).unwrap();
+        
+        // Non-existent directory should be kept as literal text
+        assert!(result.text.contains("@nonexistent/"), "Non-existent dir should be kept as text");
+    }
+
+    #[test]
+    fn test_glob_no_matches_kept_as_text() {
+        let tmp = TempDir::new().unwrap();
+        
+        let result = process_input("@*.nonexistent", tmp.path()).unwrap();
+        
+        // Pattern with no matches should be kept as literal text
+        assert!(result.text.contains("@*.nonexistent"), "No-match glob should be kept as text");
+    }
+
+    #[test]
+    fn test_directory_with_images() {
+        let tmp = TempDir::new().unwrap();
+        let imgdir = tmp.path().join("images");
+        fs::create_dir(&imgdir).unwrap();
+        
+        fs::write(imgdir.join("photo1.png"), b"png1").unwrap();
+        fs::write(imgdir.join("photo2.png"), b"png2").unwrap();
+        fs::write(imgdir.join("note.txt"), "text note").unwrap();
+        
+        let result = process_input("@images/", tmp.path()).unwrap();
+        
+        // Should include images
+        assert_eq!(result.images.len(), 2, "Should include 2 images");
+        assert!(result.images.iter().any(|img| img.data == b"png1"));
+        assert!(result.images.iter().any(|img| img.data == b"png2"));
+        
+        // Should also include text file
+        assert!(result.text.contains("text note"), "Should include text file");
     }
 }

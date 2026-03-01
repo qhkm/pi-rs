@@ -141,7 +141,7 @@ async fn main() -> Result<()> {
     // Discover and register extension tools.
     let extensions = pi_coding_agent::extensions::discover_extensions(std::path::Path::new(&cwd))?;
     let extension_tools =
-        pi_coding_agent::extensions::register_extension_tools(&agent, &extensions).await;
+        pi_coding_agent::extensions::register_extension_tools(&agent, &extensions, None).await;
     if extension_tools > 0 {
         tracing::info!(
             "Registered {} extension tools from {} extensions",
