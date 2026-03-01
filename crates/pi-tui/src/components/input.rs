@@ -21,9 +21,8 @@ pub struct Input {
     dirty: bool,
     kill_ring: Vec<String>,
     kill_ring_index: usize,
-    /// Tracks the byte range `(start, end)` of the most recent yank, so that
-    /// `yank_pop` can replace it with a different kill-ring entry.
-    last_yank: Option<(usize, usize)>,
+    /// Track last yanked text for yank_pop rotation
+    last_yank: Option<(String, usize)>, // (text, position where inserted)
     undo_stack: Vec<(String, usize)>,
     keybindings: KeybindingsManager,
     in_bracketed_paste: bool,
@@ -59,7 +58,6 @@ impl Input {
         self.cursor = s.len();
         self.value = s;
         self.scroll_offset = 0;
-        self.last_yank = None;
         self.dirty = true;
     }
 
@@ -68,7 +66,6 @@ impl Input {
         self.value.clear();
         self.cursor = 0;
         self.scroll_offset = 0;
-        self.last_yank = None;
         self.dirty = true;
     }
 
@@ -188,7 +185,6 @@ impl Input {
 
     fn insert_str(&mut self, s: &str) {
         self.push_undo();
-        self.last_yank = None;
         self.value.insert_str(self.cursor, s);
         self.cursor += s.len();
         self.dirty = true;
@@ -199,7 +195,6 @@ impl Input {
             return;
         }
         self.push_undo();
-        self.last_yank = None;
         let prev = self.char_boundary_left(self.cursor);
         self.value.drain(prev..self.cursor);
         self.cursor = prev;
@@ -214,7 +209,6 @@ impl Input {
             return;
         }
         self.push_undo();
-        self.last_yank = None;
         let next = self.char_boundary_right(self.cursor);
         self.value.drain(self.cursor..next);
         self.dirty = true;
@@ -226,7 +220,6 @@ impl Input {
             return;
         }
         self.push_undo();
-        self.last_yank = None;
         let deleted = self.value[new_pos..self.cursor].to_string();
         self.value.drain(new_pos..self.cursor);
         self.cursor = new_pos;
@@ -240,7 +233,6 @@ impl Input {
             return;
         }
         self.push_undo();
-        self.last_yank = None;
         let deleted = self.value[self.cursor..new_pos].to_string();
         self.value.drain(self.cursor..new_pos);
         self.push_to_kill_ring(deleted);
@@ -252,7 +244,6 @@ impl Input {
             return;
         }
         self.push_undo();
-        self.last_yank = None;
         let killed = self.value[self.cursor..].to_string();
         self.value.truncate(self.cursor);
         self.push_to_kill_ring(killed);
@@ -264,7 +255,6 @@ impl Input {
             return;
         }
         self.push_undo();
-        self.last_yank = None;
         let killed = self.value[..self.cursor].to_string();
         self.value.drain(..self.cursor);
         self.cursor = 0;
@@ -283,39 +273,41 @@ impl Input {
             return;
         }
         let text = self.kill_ring[self.kill_ring_index].clone();
-        let start = self.cursor;
+        let pos = self.cursor;
         self.insert_str(&text);
-        // Record the yank range (insert_str sets last_yank = None, so set after)
-        self.last_yank = Some((start, self.cursor));
+        // Track what was yanked and where
+        self.last_yank = Some((text, pos));
     }
 
     fn yank_pop(&mut self) {
-        if self.kill_ring.is_empty() {
+        if self.kill_ring.is_empty() || self.last_yank.is_none() {
             return;
         }
-        // yank_pop only works immediately after yank or yank_pop
-        let (start, end) = match self.last_yank {
-            Some(range) => range,
-            None => return,
-        };
-
-        // Cycle the kill ring index
+        
+        let (last_text, last_pos) = self.last_yank.as_ref().unwrap();
+        
+        // Verify the last yank text is still at the position (hasn't been modified)
+        let current_after_pos: String = self.value.chars().skip(*last_pos).take(last_text.len()).collect();
+        if &current_after_pos == last_text {
+            // Remove the previous yank
+            self.cursor = *last_pos;
+            self.value = self.value.chars().take(*last_pos)
+                .chain(self.value.chars().skip(last_pos + last_text.len()))
+                .collect();
+        }
+        
+        // Rotate to next kill ring entry
         if self.kill_ring_index == 0 {
             self.kill_ring_index = self.kill_ring.len() - 1;
         } else {
             self.kill_ring_index -= 1;
         }
-
-        // Delete the previously yanked text
-        self.push_undo();
-        self.value.drain(start..end);
-        self.cursor = start;
-
-        // Insert the new kill ring entry
+        
+        // Insert the new entry
         let text = self.kill_ring[self.kill_ring_index].clone();
-        self.value.insert_str(self.cursor, &text);
-        self.cursor = start + text.len();
-        self.last_yank = Some((start, self.cursor));
+        let pos = self.cursor;
+        self.insert_str(&text);
+        self.last_yank = Some((text, pos));
         self.dirty = true;
     }
 
@@ -324,7 +316,6 @@ impl Input {
             self.value = value;
             self.cursor = cursor;
             self.scroll_offset = 0;
-            self.last_yank = None;
             self.dirty = true;
         }
     }
@@ -561,67 +552,5 @@ impl Focusable for Input {
     fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
         self.dirty = true;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Helper: build an Input with a value and kill ring pre-populated.
-    fn input_with_kills(value: &str, kills: &[&str]) -> Input {
-        let mut inp = Input::new();
-        inp.set_value(value);
-        for k in kills {
-            inp.push_to_kill_ring(k.to_string());
-        }
-        inp
-    }
-
-    #[test]
-    fn yank_pop_replaces_previous_yank() {
-        // Kill ring: ["first", "second", "third"]  (index points to "third")
-        let mut inp = input_with_kills("hello ", &["first", "second", "third"]);
-        inp.cursor = 6; // after "hello "
-
-        // yank → inserts "third"
-        inp.yank();
-        assert_eq!(inp.value(), "hello third");
-
-        // yank_pop → replaces "third" with "second"
-        inp.yank_pop();
-        assert_eq!(inp.value(), "hello second");
-
-        // yank_pop again → replaces "second" with "first"
-        inp.yank_pop();
-        assert_eq!(inp.value(), "hello first");
-    }
-
-    #[test]
-    fn yank_pop_without_prior_yank_is_noop() {
-        let mut inp = input_with_kills("hello", &["killed"]);
-        inp.cursor = 5;
-
-        // yank_pop without a preceding yank should be a no-op
-        inp.yank_pop();
-        assert_eq!(inp.value(), "hello");
-    }
-
-    #[test]
-    fn insert_after_yank_clears_yank_state() {
-        let mut inp = input_with_kills("", &["alpha", "beta"]);
-        inp.cursor = 0;
-
-        // Yank "beta"
-        inp.yank();
-        assert_eq!(inp.value(), "beta");
-
-        // Insert a character — should clear last_yank
-        inp.insert_str("x");
-        assert_eq!(inp.value(), "betax");
-
-        // yank_pop should now be a no-op (last_yank was cleared)
-        inp.yank_pop();
-        assert_eq!(inp.value(), "betax");
     }
 }

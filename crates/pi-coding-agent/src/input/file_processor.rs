@@ -25,6 +25,7 @@ const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp"];
 ///
 /// - `@path/to/file.txt` is read and wrapped in `<file name="...">...</file>` tags,
 ///   then prepended to the returned text.
+/// - `@"path with spaces/file.txt"` supports quoted paths with spaces.
 /// - `@path/to/image.png` is read as raw bytes and appended to the `images` list.
 /// - Paths are resolved relative to `cwd`.
 /// - If a referenced file does not exist, the `@reference` is kept as literal text.
@@ -33,59 +34,75 @@ const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp"];
 pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
     let mut text_parts: Vec<String> = Vec::new();
     let mut images: Vec<ImageAttachment> = Vec::new();
-    let mut remaining_text = String::new();
+    let mut remaining_text_parts: Vec<String> = Vec::new();
 
-    // Simple parsing: split on whitespace, detect @references.
-    for word in input.split_whitespace() {
+    // First, process quoted references @"..."
+    let mut processed = input.to_string();
+    let mut found_quoted = true;
+    
+    while found_quoted {
+        found_quoted = false;
+        if let Some(start) = processed.find('@') {
+            if processed.chars().nth(start + 1) == Some('"') {
+                if let Some(end) = processed[start + 2..].find('"') {
+                    let end = start + 2 + end;
+                    let quoted_ref = &processed[start + 2..end];
+                    let before = &processed[..start];
+                    let after = &processed[end + 1..];
+                    
+                    if let Ok(()) = process_file_ref(quoted_ref, cwd, &mut text_parts, &mut images) {
+                        // File processed successfully
+                        if !before.trim().is_empty() {
+                            remaining_text_parts.push(before.trim().to_string());
+                        }
+                        if !after.trim().is_empty() {
+                            remaining_text_parts.push(after.trim().to_string());
+                        }
+                        processed = String::new();
+                        found_quoted = true;
+                        break;
+                    } else {
+                        // File doesn't exist - keep as literal, mark as processed
+                        processed = format!("{}@\"{}\"{}", before, quoted_ref, after);
+                        // Skip this reference for the next loop
+                        processed = processed.replacen("@\"", "@@\"", 1);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Restore @@ to @ for unmatched references
+    processed = processed.replace("@@", "@");
+    
+    // Process remaining unquoted references
+    let mut final_remaining = String::new();
+    
+    for word in processed.split_whitespace() {
         if word.starts_with('@') && word.len() > 1 {
             let file_ref = &word[1..];
-            let path = resolve_file_path(file_ref, cwd);
-
-            if !path.exists() {
-                // File does not exist -- keep the token as literal text.
-                if !remaining_text.is_empty() {
-                    remaining_text.push(' ');
+            
+            if let Err(_) = process_file_ref(file_ref, cwd, &mut text_parts, &mut images) {
+                // File doesn't exist - keep as literal
+                if !final_remaining.is_empty() {
+                    final_remaining.push(' ');
                 }
-                remaining_text.push_str(word);
-                continue;
-            }
-
-            if is_image_file(&path) {
-                match std::fs::read(&path) {
-                    Ok(data) => {
-                        let mime = mime_type_for_path(&path);
-                        images.push(ImageAttachment {
-                            data,
-                            mime_type: mime,
-                            filename: file_ref.to_string(),
-                        });
-                    }
-                    Err(e) => {
-                        text_parts.push(format!("[Error reading image {}: {}]", file_ref, e));
-                    }
-                }
-            } else {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        text_parts.push(format!(
-                            "<file name=\"{}\">\n{}\n</file>",
-                            file_ref, content
-                        ));
-                    }
-                    Err(e) => {
-                        text_parts.push(format!("[Error reading {}: {}]", file_ref, e));
-                    }
-                }
+                final_remaining.push_str(word);
             }
         } else {
-            if !remaining_text.is_empty() {
-                remaining_text.push(' ');
+            if !final_remaining.is_empty() {
+                final_remaining.push(' ');
             }
-            remaining_text.push_str(word);
+            final_remaining.push_str(word);
         }
+    }
+    
+    if !final_remaining.is_empty() {
+        remaining_text_parts.push(final_remaining);
     }
 
     // Combine: file contents first, then remaining user text.
+    let remaining_text = remaining_text_parts.join(" ");
     if !remaining_text.is_empty() {
         text_parts.push(remaining_text);
     }
@@ -94,6 +111,46 @@ pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
         text: text_parts.join("\n\n"),
         images,
     })
+}
+
+/// Process a single file reference (quoted or unquoted).
+fn process_file_ref(
+    file_ref: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    let path = resolve_file_path(file_ref, cwd);
+
+    if !path.exists() {
+        anyhow::bail!("File not found: {}", file_ref);
+    }
+
+    if is_image_file(&path) {
+        match std::fs::read(&path) {
+            Ok(data) => {
+                let mime = mime_type_for_path(&path);
+                images.push(ImageAttachment {
+                    data,
+                    mime_type: mime,
+                    filename: file_ref.to_string(),
+                });
+            }
+            Err(e) => anyhow::bail!("Error reading image: {}", e),
+        }
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                text_parts.push(format!(
+                    "<file name=\"{}\">\n{}\n</file>",
+                    file_ref, content
+                ));
+            }
+            Err(e) => anyhow::bail!("Error reading file: {}", e),
+        }
+    }
+    
+    Ok(())
 }
 
 impl ImageAttachment {
@@ -231,7 +288,7 @@ mod tests {
         assert!(result.text.contains("<file name=\"code.rs\">"));
         assert!(result.text.contains("fn main() {}"));
         assert!(result.text.contains("review"));
-        assert!(result.text.contains("look at"));
+        assert!(result.text.contains("and look at"));
         assert_eq!(result.images.len(), 1);
         assert_eq!(result.images[0].filename, "screenshot.png");
     }
@@ -260,5 +317,38 @@ mod tests {
         let result = process_input("@ something", tmp.path()).unwrap();
         assert_eq!(result.text, "@ something");
         assert!(result.images.is_empty());
+    }
+
+    #[test]
+    fn test_quoted_path_with_spaces() {
+        let tmp = TempDir::new().unwrap();
+        // Create file with spaces in name
+        fs::write(tmp.path().join("file with spaces.txt"), "content with spaces").unwrap();
+        
+        let result = process_input("check @\"file with spaces.txt\" please", tmp.path()).unwrap();
+        assert!(result.text.contains("<file name=\"file with spaces.txt\">"));
+        assert!(result.text.contains("content with spaces"));
+        assert!(result.text.contains("check"));
+        assert!(result.text.contains("please"));
+    }
+
+    #[test]
+    fn test_quoted_nonexistent_file_kept_as_text() {
+        let tmp = TempDir::new().unwrap();
+        let result = process_input("check @\"no such file.txt\" please", tmp.path()).unwrap();
+        assert!(result.text.contains("check"));
+        assert!(result.text.contains("@\"no such file.txt\""));
+        assert!(result.text.contains("please"));
+    }
+
+    #[test]
+    fn test_quoted_image_path() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("my image.png"), b"image data").unwrap();
+        
+        let result = process_input("look at @\"my image.png\"", tmp.path()).unwrap();
+        assert_eq!(result.images.len(), 1);
+        assert_eq!(result.images[0].filename, "my image.png");
+        assert_eq!(result.images[0].data, b"image data");
     }
 }
