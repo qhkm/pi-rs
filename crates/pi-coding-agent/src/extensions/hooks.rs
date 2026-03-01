@@ -14,6 +14,17 @@ pub enum HookEvent {
     AfterToolExecution,
     SessionStart,
     SessionEnd,
+    // UI-specific hooks for TUI integration
+    /// Called before rendering the main UI frame
+    BeforeRender,
+    /// Called when a key event is received (allows interception)
+    OnKeyEvent,
+    /// Called when a slash command is executed
+    OnSlashCommand,
+    /// Called before showing a tool execution visualization
+    BeforeToolVisualization,
+    /// Called when the footer is rendered (allows adding custom status)
+    OnFooterRender,
 }
 
 /// Data passed to every hook handler when an event fires.

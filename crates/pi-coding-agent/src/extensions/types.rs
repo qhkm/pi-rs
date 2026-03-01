@@ -39,6 +39,34 @@ pub struct ExtensionCommand {
     pub description: String,
 }
 
+/// Tool wrapper definition for intercepting and modifying tool calls
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolWrapperDef {
+    /// Name of the tool to wrap (can be * for all tools)
+    pub tool_name: String,
+    /// Description of what this wrapper does
+    pub description: String,
+    /// The wrapper implementation type
+    pub wrapper_type: WrapperType,
+    /// Pre-execution hook script/binary path
+    pub before_hook: Option<String>,
+    /// Post-execution hook script/binary path  
+    pub after_hook: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WrapperType {
+    /// Shell script wrapper
+    Shell,
+    /// WASM module wrapper
+    Wasm,
+    /// Binary executable wrapper
+    Binary,
+    /// Inline JavaScript/TypeScript (for extensions with embedded runtime)
+    Inline,
+}
+
 /// A loaded extension
 pub struct Extension {
     pub manifest: ExtensionManifest,

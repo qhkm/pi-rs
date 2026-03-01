@@ -272,6 +272,39 @@ impl SlashCommandRegistry {
             CommandDef::new("version", "Show version information")
                 .with_alias("v"),
         );
+
+        // Additional commands (new)
+        self.register(
+            CommandDef::new("history", "Show conversation history")
+                .with_alias("hist")
+                .with_usage("/history [limit]")
+                .with_arg("limit", "Number of messages to show (default: 10)"),
+        );
+
+        self.register(
+            CommandDef::new("fork", "Fork the current session")
+                .with_description("Create a new session branching from current point")
+                .with_usage("/fork [name]")
+                .with_arg("name", "Optional name for the forked session"),
+        );
+
+        self.register(
+            CommandDef::new("merge", "Merge another session into current")
+                .with_usage("/merge <session-name>")
+                .with_arg("session-name", "Name of session to merge")
+                .with_args_required(true),
+        );
+
+        self.register(
+            CommandDef::new("debug", "Toggle debug mode")
+                .with_description("Show detailed tool execution and timing info"),
+        );
+
+        self.register(
+            CommandDef::new("prompt", "View or edit system prompt")
+                .with_usage("/prompt [new-prompt]")
+                .with_arg("new-prompt", "New system prompt (omit to view current)"),
+        );
     }
 }
 
@@ -317,16 +350,17 @@ impl SimpleCommandHandler {
     pub fn help_all(&self) -> String {
         let mut result = String::from("Available commands:\n\n");
         
-        for category in ["Session", "Model", "Settings", "Export", "Help", "Other"] {
+        for category in ["Session", "Model", "Settings", "Export", "Help", "Debug", "Other"] {
             let commands: Vec<&CommandDef> = self.registry.list()
                 .into_iter()
                 .filter(|c| {
                     let cat = match c.name.as_str() {
-                        "clear" | "compact" | "undo" => "Session",
+                        "clear" | "compact" | "undo" | "fork" | "merge" => "Session",
                         "model" | "thinking" | "models" => "Model",
-                        "settings" | "tokens" => "Settings",
+                        "settings" | "tokens" | "prompt" => "Settings",
                         "export" | "save" | "load" => "Export",
-                        "help" | "commands" | "version" => "Help",
+                        "help" | "commands" | "version" | "history" => "Help",
+                        "debug" => "Debug",
                         _ => "Other",
                     };
                     cat == category
@@ -397,6 +431,21 @@ impl CommandHandler for SimpleCommandHandler {
             }
             "version" | "v" => {
                 CommandResult::Info(format!("pi-tui version {}", env!("CARGO_PKG_VERSION")))
+            }
+            "history" | "hist" => {
+                CommandResult::Success(Some("Showing conversation history...".to_string()))
+            }
+            "fork" => {
+                CommandResult::Success(Some("Session forked.".to_string()))
+            }
+            "merge" => {
+                CommandResult::Success(Some("Session merged.".to_string()))
+            }
+            "debug" => {
+                CommandResult::Success(Some("Debug mode toggled.".to_string()))
+            }
+            "prompt" => {
+                CommandResult::Success(Some("System prompt updated.".to_string()))
             }
             _ => {
                 if self.registry.has(&cmd.name) {

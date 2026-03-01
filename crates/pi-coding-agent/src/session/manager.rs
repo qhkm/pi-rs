@@ -601,6 +601,258 @@ impl SessionManager {
     }
 
     // -----------------------------------------------------------------------
+    // Session merging
+    // -----------------------------------------------------------------------
+
+    /// Merge another session into the current session.
+    ///
+    /// All entries from `source_path` are appended to the current session,
+    /// with their parent IDs adjusted to maintain the tree structure.
+    /// Entries are re-parented to chain from the current session's last entry.
+    ///
+    /// Returns the number of entries merged.
+    pub async fn merge(&mut self, source_path: &Path) -> Result<usize> {
+        let current_path = self
+            .current_session
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No active session"))?
+            .clone();
+
+        // Read source session
+        let source_data = fs::read_to_string(source_path)
+            .await
+            .with_context(|| format!("Failed to read source session: {}", source_path.display()))?;
+
+        let source_lines: Vec<&str> = source_data.lines().collect();
+        if source_lines.is_empty() {
+            return Ok(0);
+        }
+
+        // Parse source header to validate it's a session file
+        let _: SessionHeader = serde_json::from_str(source_lines[0])
+            .with_context(|| "Source file is not a valid session")?;
+
+        // Build a map of old ID -> new ID for all entries we're merging
+        let mut id_remap: HashMap<String, String> = HashMap::new();
+        let mut entries_to_merge: Vec<SessionEntry> = Vec::new();
+
+        // First pass: collect all entries and assign new IDs
+        for line in &source_lines[1..] {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
+                let old_id = entry.id().to_string();
+                let new_id = Uuid::new_v4().to_string();
+                id_remap.insert(old_id, new_id.clone());
+                entries_to_merge.push(entry);
+            }
+        }
+
+        if entries_to_merge.is_empty() {
+            return Ok(0);
+        }
+
+        // Get the current last entry ID to use as parent for the first merged entry
+        let current_parent_id = self.last_entry_id.clone();
+
+        // Second pass: remap parent IDs and write entries
+        let mut count = 0;
+        let mut previous_new_id: Option<String> = current_parent_id;
+
+        for entry in entries_to_merge {
+            let old_id = entry.id().to_string();
+            let new_id = id_remap.get(&old_id).cloned().unwrap_or_else(|| Uuid::new_v4().to_string());
+
+            // Remap the entry with new IDs
+            let remapped_entry = self.remap_entry_ids(entry, &new_id, &previous_new_id, &id_remap);
+            
+            self.append_entry(&remapped_entry).await?;
+            previous_new_id = Some(new_id);
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// Remap entry IDs for merging.
+    fn remap_entry_ids(
+        &self,
+        entry: SessionEntry,
+        new_id: &str,
+        new_parent_id: &Option<String>,
+        id_remap: &HashMap<String, String>,
+    ) -> SessionEntry {
+        use SessionEntry::*;
+
+        match entry {
+            Message { message, timestamp, .. } => Message {
+                id: new_id.to_string(),
+                parent_id: new_parent_id.clone(),
+                timestamp,
+                message,
+            },
+            Compaction { summary, first_kept_entry_id, tokens_before, timestamp, .. } => {
+                // Remap the first_kept_entry_id if it was in the merged session
+                let remapped_first_kept = id_remap.get(&first_kept_entry_id).cloned();
+                Compaction {
+                    id: new_id.to_string(),
+                    parent_id: new_parent_id.clone(),
+                    timestamp,
+                    summary,
+                    first_kept_entry_id: remapped_first_kept.unwrap_or(first_kept_entry_id),
+                    tokens_before,
+                }
+            }
+            ModelChange { model, provider, timestamp, .. } => ModelChange {
+                id: new_id.to_string(),
+                parent_id: new_parent_id.clone(),
+                timestamp,
+                model,
+                provider,
+            },
+            ThinkingLevelChange { level, timestamp, .. } => ThinkingLevelChange {
+                id: new_id.to_string(),
+                parent_id: new_parent_id.clone(),
+                timestamp,
+                level,
+            },
+            Label { label, timestamp, .. } => Label {
+                id: new_id.to_string(),
+                parent_id: new_parent_id.clone(),
+                timestamp,
+                label,
+            },
+            BranchSummary { branch_entry_id, summary, tokens_before, timestamp, .. } => {
+                // Remap the branch_entry_id if it was in the merged session
+                let remapped_branch = id_remap.get(&branch_entry_id).cloned();
+                BranchSummary {
+                    id: new_id.to_string(),
+                    branch_entry_id: remapped_branch.unwrap_or(branch_entry_id),
+                    parent_id: new_parent_id.clone(),
+                    timestamp,
+                    summary,
+                    tokens_before,
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Schema migrations
+    // -----------------------------------------------------------------------
+
+    /// Migrate a session file from an older schema version to the current version (3).
+    ///
+    /// Returns true if migration was performed, false if already at current version.
+    pub async fn migrate_session(path: &Path) -> Result<bool> {
+        let data = fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read session file: {}", path.display()))?;
+
+        let lines: Vec<&str> = data.lines().collect();
+        if lines.is_empty() {
+            anyhow::bail!("Session file is empty");
+        }
+
+        // Parse header to check version
+        let header: serde_json::Value = serde_json::from_str(lines[0])
+            .with_context(|| "Invalid session header")?;
+
+        let version = header.get("version")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
+        if version >= 3 {
+            return Ok(false); // Already at current version
+        }
+
+        // Perform migration
+        let mut migrated_lines = Vec::new();
+        
+        // Migrate header
+        let mut new_header = header.clone();
+        if let Some(obj) = new_header.as_object_mut() {
+            obj.insert("version".to_string(), serde_json::json!(3));
+            // Ensure entry_type is set
+            if !obj.contains_key("type") {
+                obj.insert("type".to_string(), serde_json::json!("session"));
+            }
+        }
+        migrated_lines.push(serde_json::to_string(&new_header)?);
+
+        // Migrate entries based on version
+        for line in &lines[1..] {
+            if line.trim().is_empty() {
+                migrated_lines.push(line.to_string());
+                continue;
+            }
+
+            let mut entry: serde_json::Value = match serde_json::from_str(line) {
+                Ok(e) => e,
+                Err(_) => {
+                    // Keep malformed lines as-is
+                    migrated_lines.push(line.to_string());
+                    continue;
+                }
+            };
+
+            // Version-specific migrations
+            if version < 2 {
+                // v1 -> v2: Ensure all entries have an 'id' field
+                if let Some(obj) = entry.as_object_mut() {
+                    if !obj.contains_key("id") {
+                        obj.insert("id".to_string(), serde_json::json!(Uuid::new_v4().to_string()));
+                    }
+                    // Ensure 'type' field exists
+                    if !obj.contains_key("type") {
+                        // Infer type from structure or default to message
+                        let entry_type = if obj.contains_key("message") {
+                            "message"
+                        } else if obj.contains_key("summary") && obj.contains_key("first_kept_entry_id") {
+                            "compaction"
+                        } else if obj.contains_key("model") {
+                            "model_change"
+                        } else {
+                            "message"
+                        };
+                        obj.insert("type".to_string(), serde_json::json!(entry_type));
+                    }
+                }
+            }
+
+            if version < 3 {
+                // v2 -> v3: Add timestamp if missing
+                if let Some(obj) = entry.as_object_mut() {
+                    if !obj.contains_key("timestamp") {
+                        obj.insert("timestamp".to_string(), serde_json::json!(Utc::now()));
+                    }
+                    // Ensure parent_id field exists (can be null)
+                    if !obj.contains_key("parent_id") {
+                        obj.insert("parent_id".to_string(), serde_json::Value::Null);
+                    }
+                }
+            }
+
+            migrated_lines.push(serde_json::to_string(&entry)?);
+        }
+
+        // Write migrated file atomically
+        let temp_path = path.with_extension("tmp");
+        let mut temp_file = fs::File::create(&temp_path).await?;
+        for line in migrated_lines {
+            temp_file.write_all(line.as_bytes()).await?;
+            temp_file.write_all(b"\n").await?;
+        }
+        drop(temp_file);
+
+        // Atomically replace original
+        fs::rename(&temp_path, path).await?;
+
+        Ok(true)
+    }
+
+    // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
 
@@ -1752,6 +2004,173 @@ mod tests {
             .expect_err("should fail without active session");
         assert!(err.to_string().contains("No active session"));
 
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // Session merging tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn merge_appends_source_entries_to_current_session() {
+        let dir = temp_dir("merge-basic");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        // Create target session with 2 messages
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-msg-1"))).await.expect("t1");
+        let t2 = manager.append_message(AgentMessage::from_llm(Message::user("target-msg-2"))).await.expect("t2");
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create source session file manually
+        let source_path = dir.join("source.jsonl");
+        let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
+        let s1 = SessionEntry::Message {
+            id: "s1".to_string(),
+            parent_id: None,
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-msg-1")),
+        };
+        let s2 = SessionEntry::Message {
+            id: "s2".to_string(),
+            parent_id: Some("s1".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-msg-2")),
+        };
+        let source_content = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&source_header).unwrap(),
+            serde_json::to_string(&s1).unwrap(),
+            serde_json::to_string(&s2).unwrap()
+        );
+        fs::write(&source_path, source_content).expect("write source");
+        
+        // Merge source into target
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 2, "should merge 2 entries");
+        
+        // Verify merged entries are chained from t2
+        let lines = read_lines(&target_path).await;
+        assert_eq!(lines.len(), 5, "header + 2 target + 2 merged = 5 lines");
+        
+        // Last entry should be a message with parent_id pointing to t2
+        let last_entry = parse_entry(lines.last().unwrap());
+        match last_entry {
+            SessionEntry::Message { parent_id, .. } => {
+                // The last merged entry's parent should be the previous entry in the merged chain
+                assert!(parent_id.is_some(), "merged entry should have parent");
+            }
+            _ => panic!("expected message entry"),
+        }
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn merge_errors_without_active_session() {
+        let dir = temp_dir("merge-no-session");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        let source_path = dir.join("source.jsonl");
+        fs::write(&source_path, "{}\n").expect("write source");
+        
+        let err = manager.merge(&source_path).await.expect_err("should fail without session");
+        assert!(err.to_string().contains("No active session"));
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn merge_empty_source_returns_zero() {
+        let dir = temp_dir("merge-empty");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create empty source
+        let source_path = dir.join("source.jsonl");
+        let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
+        fs::write(&source_path, format!("{}\n", serde_json::to_string(&source_header).unwrap())).expect("write source");
+        
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 0, "should merge 0 entries from empty source");
+        
+        // Target should still only have header
+        let lines = read_lines(&target_path).await;
+        assert_eq!(lines.len(), 1, "only header line");
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // Schema migration tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn migrate_session_upgrades_v1_to_v3() {
+        let dir = temp_dir("migrate-v1");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("v1-session.jsonl");
+        
+        // Create a v1-style session (minimal header, no version field)
+        let v1_header = r#"{"type":"session","id":"v1-test","cwd":"/tmp","timestamp":"2024-01-01T00:00:00Z"}"#;
+        let v1_entry = r#"{"type":"message","id":"m1","message":{"role":"user","content":"hello"}}"#;
+        fs::write(&path, format!("{}\n{}\n", v1_header, v1_entry)).expect("write v1 session");
+        
+        // Migrate
+        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        assert!(migrated, "should have performed migration");
+        
+        // Verify upgrade
+        let content = fs::read_to_string(&path).expect("read migrated");
+        let lines: Vec<&str> = content.lines().collect();
+        let header: serde_json::Value = serde_json::from_str(lines[0]).expect("parse header");
+        assert_eq!(header.get("version").unwrap().as_u64(), Some(3));
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn migrate_session_returns_false_for_current_version() {
+        let dir = temp_dir("migrate-current");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("v3-session.jsonl");
+        
+        // Create a v3 session
+        let header = SessionHeader::new("v3-test".to_string(), "/tmp".to_string());
+        fs::write(&path, format!("{}\n", serde_json::to_string(&header).unwrap())).expect("write v3 session");
+        
+        // Try to migrate
+        let migrated = SessionManager::migrate_session(&path).await.expect("check succeeded");
+        assert!(!migrated, "should not migrate already-current version");
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn migrate_session_adds_missing_timestamps() {
+        let dir = temp_dir("migrate-timestamps");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("v2-session.jsonl");
+        
+        // Create a v2-style session (has version 2, but some entries lack timestamps)
+        let v2_header = r#"{"type":"session","version":2,"id":"v2-test","cwd":"/tmp","timestamp":"2024-01-01T00:00:00Z"}"#;
+        let v2_entry_no_ts = r#"{"type":"message","id":"m1","parent_id":null,"message":{"role":"user","content":"hello"}}"#;
+        fs::write(&path, format!("{}\n{}\n", v2_header, v2_entry_no_ts)).expect("write v2 session");
+        
+        // Migrate
+        SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        
+        // Verify entry now has timestamp
+        let content = fs::read_to_string(&path).expect("read migrated");
+        let lines: Vec<&str> = content.lines().collect();
+        let entry: serde_json::Value = serde_json::from_str(lines[1]).expect("parse entry");
+        assert!(entry.get("timestamp").is_some(), "entry should now have timestamp");
+        
         fs::remove_dir_all(dir).ok();
     }
 }

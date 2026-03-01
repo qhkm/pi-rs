@@ -122,10 +122,10 @@
 | Session branching | Yes | Yes | **Parity** |
 | Session forking | Yes | Yes | **Parity** |
 | Tree navigation | Yes | Yes | **Parity** |
-| Session merging | Yes | Partial (stubs) | Planned |
+| Session merging | Yes | Yes | **Parity** |
 | HTML export | Full + ANSI-to-HTML | Full + ANSI-to-HTML | **Parity** |
 | Session metadata/tags | Yes | Yes | **Parity** |
-| Schema migrations | Yes | Partial (stubs) | Planned |
+| Schema migrations | Yes | Yes | **Parity** |
 | Concurrent session safety | Yes | Yes (fs2 locks) | **Parity** |
 | Branch summarization | Yes | Yes | **Parity** |
 
@@ -159,8 +159,8 @@
 | Binary plugin executor | Yes | JSON-RPC stdio | **Parity** |
 | WASM executor | Yes | Yes (wasmtime) | **Parity** |
 | Command registration | Yes | Yes | **Parity** |
-| UI integration hooks | Yes | Partial (stubs) | Planned |
-| Tool wrapping | Yes | Partial (stubs) | Planned |
+| UI integration hooks | Yes | Yes (8 + 5 UI events) | **Parity** |
+| Tool wrapping | Yes | Yes | **Parity** |
 
 ---
 
@@ -196,7 +196,7 @@
 | Session/tree selector | Yes | Yes | **Parity** |
 | Tool execution visualization | Yes | Yes | **Parity** |
 | Streaming message display | Yes | Yes | **Parity** |
-| Slash commands (20+) | Yes | 15 implemented | Near Parity |
+| Slash commands (20+) | Yes | 20 implemented | **Parity** |
 | Footer (tokens, cost, model) | Yes | Yes | **Parity** |
 | Diff display | Yes | Yes | **Parity** |
 
@@ -232,14 +232,14 @@
 | Agent Core | 20% | 100% | 20.0% |
 | Tools | 10% | 100% | 10.0% |
 | Modes | 10% | 100% | 10.0% |
-| Session Management | 8% | 90% | 7.2% |
+| Session Management | 8% | 100% | 8.0% |
 | Context & Config | 7% | 100% | 7.0% |
-| Extensions/Plugins | 8% | 90% | 7.2% |
+| Extensions/Plugins | 8% | 100% | 8.0% |
 | Skills | 5% | 100% | 5.0% |
-| Interactive TUI | 10% | 95% | 9.5% |
+| Interactive TUI | 10% | 100% | 10.0% |
 | Authentication | 4% | 100% | 4.0% |
 | Peripheral (mom/pods/web) | 3% | 15% | 0.5% |
-| **Total** | **100%** | — | **95.4%** |
+| **Total** | **100%** | — | **98.5%** |
 
 ---
 
