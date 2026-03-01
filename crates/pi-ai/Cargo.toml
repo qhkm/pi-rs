@@ -27,6 +27,12 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# JWT signing for Vertex AI service accounts
+jsonwebtoken = { workspace = true }
+
+# CRC32 for Bedrock event stream parsing
+crc32fast = { workspace = true }
+
 # OAuth support
 rand = "0.8"
 keyring = "2"

@@ -358,15 +358,127 @@ fn map_stop_reason(reason: &str) -> StopReason {
     }
 }
 
-// ─── SSE event types from Bedrock ConverseStream ──────────────────────────────
+// ─── AWS event stream binary decoding ─────────────────────────────────────────
 //
-// NOTE: The real Bedrock ConverseStream API uses AWS event stream binary
-// encoding (`application/vnd.amazon.eventstream`), not plain JSON lines.
-// This JSON-line parser works against the Bedrock *HTTP streaming* endpoint
-// when used via API Gateway / proxy configurations that unwrap the binary
-// framing into newline-delimited JSON.  For direct Bedrock access, replace
-// this parser with one based on `aws-smithy-eventstream`.
-// TODO: Implement proper AWS event stream binary decoding.
+// The Bedrock ConverseStream API uses the AWS event stream binary encoding
+// (`application/vnd.amazon.eventstream`).  Each frame has:
+//   - Prelude: total_length (u32 BE) + headers_length (u32 BE) + prelude_crc (u32 BE)
+//   - Headers: sequence of name-len(u8)+name+type(u8)+value-len(u16 BE)+value
+//   - Payload: raw bytes
+//   - Message CRC: crc32 of the entire frame (u32 BE)
+//
+// We also support newline-delimited JSON for API Gateway / proxy configs.
+
+/// Parse a single AWS event stream frame from a byte buffer.
+///
+/// Returns `Ok(Some((event_type, payload, bytes_consumed)))` on success,
+/// `Ok(None)` if not enough bytes yet, or `Err` on CRC mismatch.
+fn parse_event_stream_frame(buf: &[u8]) -> std::result::Result<Option<(String, Vec<u8>, usize)>, String> {
+    if buf.len() < 12 {
+        return Ok(None); // need at least the prelude
+    }
+
+    let total_length = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    let headers_length = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+    let prelude_crc = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
+
+    if buf.len() < total_length {
+        return Ok(None); // incomplete frame
+    }
+
+    // Validate prelude CRC (covers the first 8 bytes)
+    let computed_prelude_crc = crc32fast::hash(&buf[..8]);
+    if computed_prelude_crc != prelude_crc {
+        return Err(format!(
+            "Prelude CRC mismatch: expected {prelude_crc:#010x}, got {computed_prelude_crc:#010x}"
+        ));
+    }
+
+    // Validate message CRC (covers everything except the last 4 bytes)
+    let message_crc_offset = total_length - 4;
+    let message_crc = u32::from_be_bytes([
+        buf[message_crc_offset],
+        buf[message_crc_offset + 1],
+        buf[message_crc_offset + 2],
+        buf[message_crc_offset + 3],
+    ]);
+    let computed_message_crc = crc32fast::hash(&buf[..message_crc_offset]);
+    if computed_message_crc != message_crc {
+        return Err(format!(
+            "Message CRC mismatch: expected {message_crc:#010x}, got {computed_message_crc:#010x}"
+        ));
+    }
+
+    // Parse headers
+    let headers_start = 12;
+    let headers_end = headers_start + headers_length;
+    let headers = parse_event_stream_headers(&buf[headers_start..headers_end])?;
+
+    // Extract event type from headers
+    let event_type = headers
+        .get(":event-type")
+        .or_else(|| headers.get(":exception-type"))
+        .cloned()
+        .unwrap_or_default();
+
+    // Extract payload
+    let payload_start = headers_end;
+    let payload_end = message_crc_offset;
+    let payload = buf[payload_start..payload_end].to_vec();
+
+    Ok(Some((event_type, payload, total_length)))
+}
+
+/// Parse AWS event stream headers from a byte slice.
+///
+/// Header format: name_len(u8) + name(name_len bytes) + type(u8) + value_len(u16 BE) + value
+/// We only handle type 7 (string) headers, which is what Bedrock uses.
+fn parse_event_stream_headers(mut buf: &[u8]) -> std::result::Result<HashMap<String, String>, String> {
+    let mut headers = HashMap::new();
+
+    while !buf.is_empty() {
+        if buf.is_empty() {
+            break;
+        }
+
+        let name_len = buf[0] as usize;
+        buf = &buf[1..];
+        if buf.len() < name_len {
+            return Err("Header name truncated".to_string());
+        }
+        let name = String::from_utf8_lossy(&buf[..name_len]).to_string();
+        buf = &buf[name_len..];
+
+        if buf.is_empty() {
+            return Err("Header type missing".to_string());
+        }
+        let header_type = buf[0];
+        buf = &buf[1..];
+
+        // Type 7 = string (16-bit length-prefixed)
+        if header_type == 7 {
+            if buf.len() < 2 {
+                return Err("Header value length truncated".to_string());
+            }
+            let value_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+            buf = &buf[2..];
+            if buf.len() < value_len {
+                return Err("Header value truncated".to_string());
+            }
+            let value = String::from_utf8_lossy(&buf[..value_len]).to_string();
+            buf = &buf[value_len..];
+            headers.insert(name, value);
+        } else {
+            // Skip other header types — we don't expect them from Bedrock
+            // but handle gracefully by skipping the value
+            return Err(format!("Unsupported header type: {header_type}"));
+        }
+    }
+
+    Ok(headers)
+}
+
+// ─── SSE event types from Bedrock ConverseStream ──────────────────────────────
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -540,24 +652,19 @@ impl BedrockProvider {
         model: &Model,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<()> {
-        struct BlockState {
-            kind: BlockKind,
-            text_buf: String,
-            tool_id: String,
-            tool_name: String,
-            args_buf: String,
-        }
+        // Check content-type to decide between binary event stream and JSON-line parsing
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
 
-        #[derive(PartialEq)]
-        enum BlockKind {
-            Text,
-            ToolUse,
-        }
+        let is_binary = content_type.contains("vnd.amazon.eventstream");
 
         let mut partial = make_partial(model);
         let mut bytes_stream = response.bytes_stream();
         let mut blocks: HashMap<usize, BlockState> = HashMap::new();
-        let mut buffer = String::new();
 
         let _ = tx
             .send(StreamEvent::Start {
@@ -565,167 +672,86 @@ impl BedrockProvider {
             })
             .await;
 
-        while let Some(chunk_result) = bytes_stream.next().await {
-            let chunk = match chunk_result {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Stream error: {e}");
-                    break;
-                }
-            };
+        if is_binary {
+            let mut bin_buf = Vec::<u8>::new();
 
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
-
-            // Process complete lines/events
-            while let Some(pos) = buffer.find("\n") {
-                let line = buffer[..pos].trim().to_string();
-                buffer = buffer[pos + 1..].to_string();
-
-                if line.is_empty() {
-                    continue;
-                }
-
-                // Bedrock returns events in the format: `{"type": "...", ...}`
-                let event: BedrockStreamEvent = match serde_json::from_str(&line) {
-                    Ok(e) => e,
+            while let Some(chunk_result) = bytes_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
                     Err(e) => {
-                        debug!("Failed to parse Bedrock event: {e} — data: {line}");
-                        continue;
+                        warn!("Stream error: {e}");
+                        break;
                     }
                 };
 
-                match event {
-                    BedrockStreamEvent::MessageStart { .. } => {}
+                bin_buf.extend_from_slice(&chunk);
 
-                    BedrockStreamEvent::ContentBlockStart { content_block_index, start } => {
-                        if let Some(tool) = start.tool_use {
-                            let tool_id = tool.tool_use_id.clone();
-                            let tool_name = tool.name.clone();
-                            blocks.insert(
-                                content_block_index,
-                                BlockState {
-                                    kind: BlockKind::ToolUse,
-                                    text_buf: String::new(),
-                                    tool_id,
-                                    tool_name,
-                                    args_buf: String::new(),
-                                },
-                            );
-                            partial.content.push(Content::ToolCall {
-                                id: tool.tool_use_id,
-                                name: tool.name,
-                                arguments: Value::Object(Default::default()),
-                                thought_signature: None,
-                            });
-                            let _ = tx
-                                .send(StreamEvent::ToolCallStart {
-                                    content_index: content_block_index,
-                                    partial: partial.clone(),
-                                })
-                                .await;
-                        } else {
-                            blocks.insert(
-                                content_block_index,
-                                BlockState {
-                                    kind: BlockKind::Text,
-                                    text_buf: String::new(),
-                                    tool_id: String::new(),
-                                    tool_name: String::new(),
-                                    args_buf: String::new(),
-                                },
-                            );
-                            partial.content.push(Content::Text {
-                                text: String::new(),
-                                text_signature: None,
-                            });
-                            let _ = tx
-                                .send(StreamEvent::TextStart {
-                                    content_index: content_block_index,
-                                    partial: partial.clone(),
-                                })
-                                .await;
-                        }
-                    }
-
-                    BedrockStreamEvent::ContentBlockDelta { content_block_index, delta } => {
-                        if let Some(block) = blocks.get_mut(&content_block_index) {
-                            if let Some(text) = delta.text {
-                                block.text_buf.push_str(&text);
-                                if let Some(Content::Text { text: ref mut t, .. }) =
-                                    partial.content.get_mut(content_block_index)
+                // Parse complete frames from the buffer
+                loop {
+                    match parse_event_stream_frame(&bin_buf) {
+                        Ok(Some((_event_type, payload, consumed))) => {
+                            // Parse the JSON payload as a Bedrock event
+                            if !payload.is_empty() {
+                                if let Ok(event) =
+                                    serde_json::from_slice::<BedrockStreamEvent>(&payload)
                                 {
-                                    *t = block.text_buf.clone();
-                                }
-                                let _ = tx
-                                    .send(StreamEvent::TextDelta {
-                                        content_index: content_block_index,
-                                        delta: text,
-                                    })
+                                    handle_bedrock_event(
+                                        event,
+                                        &mut blocks,
+                                        &mut partial,
+                                        &tx,
+                                    )
                                     .await;
-                            }
-                            if let Some(tool_delta) = delta.tool_use {
-                                if let Some(input) = tool_delta.input {
-                                    block.args_buf.push_str(&input);
-                                    if let Some(Content::ToolCall { arguments: ref mut a, .. }) =
-                                        partial.content.get_mut(content_block_index)
-                                    {
-                                        *a = serde_json::from_str(&block.args_buf)
-                                            .unwrap_or(Value::String(block.args_buf.clone()));
-                                    }
-                                    let _ = tx
-                                        .send(StreamEvent::ToolCallDelta {
-                                            content_index: content_block_index,
-                                            delta: input,
-                                        })
-                                        .await;
+                                } else {
+                                    debug!(
+                                        "Failed to parse Bedrock binary payload: {}",
+                                        String::from_utf8_lossy(&payload)
+                                    );
                                 }
                             }
+                            bin_buf.drain(..consumed);
+                        }
+                        Ok(None) => break, // need more data
+                        Err(e) => {
+                            warn!("Event stream frame error: {e}");
+                            bin_buf.clear();
+                            break;
                         }
                     }
+                }
+            }
+        } else {
+            // JSON-line parsing (for API Gateway / proxy configurations)
+            let mut text_buf = String::new();
 
-                    BedrockStreamEvent::ContentBlockStop { content_block_index } => {
-                        if let Some(block) = blocks.remove(&content_block_index) {
-                            match block.kind {
-                                BlockKind::Text => {
-                                    let _ = tx
-                                        .send(StreamEvent::TextEnd {
-                                            content_index: content_block_index,
-                                            content: block.text_buf,
-                                            partial: partial.clone(),
-                                        })
-                                        .await;
-                                }
-                                BlockKind::ToolUse => {
-                                    let args = serde_json::from_str(&block.args_buf)
-                                        .unwrap_or(Value::Object(Default::default()));
-                                    let tool_call = ToolCall {
-                                        id: block.tool_id,
-                                        name: block.tool_name,
-                                        arguments: args,
-                                    };
-                                    let _ = tx
-                                        .send(StreamEvent::ToolCallEnd {
-                                            content_index: content_block_index,
-                                            tool_call,
-                                            partial: partial.clone(),
-                                        })
-                                        .await;
-                                }
-                            }
+            while let Some(chunk_result) = bytes_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("Stream error: {e}");
+                        break;
+                    }
+                };
+
+                text_buf.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some(pos) = text_buf.find('\n') {
+                    let line = text_buf[..pos].trim().to_string();
+                    text_buf = text_buf[pos + 1..].to_string();
+
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let event: BedrockStreamEvent = match serde_json::from_str(&line) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            debug!("Failed to parse Bedrock event: {e} — data: {line}");
+                            continue;
                         }
-                    }
+                    };
 
-                    BedrockStreamEvent::MessageStop { stop_reason } => {
-                        partial.stop_reason = map_stop_reason(&stop_reason);
-                    }
-
-                    BedrockStreamEvent::Metadata { metadata } => {
-                        if let Some(usage) = metadata.usage {
-                            partial.usage.input = usage.input_tokens;
-                            partial.usage.output = usage.output_tokens;
-                            partial.usage.total_tokens = usage.input_tokens + usage.output_tokens;
-                        }
-                    }
+                    handle_bedrock_event(event, &mut blocks, &mut partial, &tx).await;
                 }
             }
         }
@@ -750,6 +776,173 @@ impl BedrockProvider {
         }
 
         Ok(())
+    }
+}
+
+struct BlockState {
+    kind: BlockKind,
+    text_buf: String,
+    tool_id: String,
+    tool_name: String,
+    args_buf: String,
+}
+
+#[derive(PartialEq)]
+enum BlockKind {
+    Text,
+    ToolUse,
+}
+
+/// Process a single Bedrock stream event — shared by both binary and JSON-line parsers.
+async fn handle_bedrock_event(
+    event: BedrockStreamEvent,
+    blocks: &mut HashMap<usize, BlockState>,
+    partial: &mut crate::messages::types::AssistantMessage,
+    tx: &mpsc::Sender<StreamEvent>,
+) {
+    match event {
+        BedrockStreamEvent::MessageStart { .. } => {}
+
+        BedrockStreamEvent::ContentBlockStart {
+            content_block_index,
+            start,
+        } => {
+            if let Some(tool) = start.tool_use {
+                let tool_id = tool.tool_use_id.clone();
+                let tool_name = tool.name.clone();
+                blocks.insert(
+                    content_block_index,
+                    BlockState {
+                        kind: BlockKind::ToolUse,
+                        text_buf: String::new(),
+                        tool_id,
+                        tool_name,
+                        args_buf: String::new(),
+                    },
+                );
+                partial.content.push(Content::ToolCall {
+                    id: tool.tool_use_id,
+                    name: tool.name,
+                    arguments: Value::Object(Default::default()),
+                    thought_signature: None,
+                });
+                let _ = tx
+                    .send(StreamEvent::ToolCallStart {
+                        content_index: content_block_index,
+                        partial: partial.clone(),
+                    })
+                    .await;
+            } else {
+                blocks.insert(
+                    content_block_index,
+                    BlockState {
+                        kind: BlockKind::Text,
+                        text_buf: String::new(),
+                        tool_id: String::new(),
+                        tool_name: String::new(),
+                        args_buf: String::new(),
+                    },
+                );
+                partial.content.push(Content::Text {
+                    text: String::new(),
+                    text_signature: None,
+                });
+                let _ = tx
+                    .send(StreamEvent::TextStart {
+                        content_index: content_block_index,
+                        partial: partial.clone(),
+                    })
+                    .await;
+            }
+        }
+
+        BedrockStreamEvent::ContentBlockDelta {
+            content_block_index,
+            delta,
+        } => {
+            if let Some(block) = blocks.get_mut(&content_block_index) {
+                if let Some(text) = delta.text {
+                    block.text_buf.push_str(&text);
+                    if let Some(Content::Text {
+                        text: ref mut t, ..
+                    }) = partial.content.get_mut(content_block_index)
+                    {
+                        *t = block.text_buf.clone();
+                    }
+                    let _ = tx
+                        .send(StreamEvent::TextDelta {
+                            content_index: content_block_index,
+                            delta: text,
+                        })
+                        .await;
+                }
+                if let Some(tool_delta) = delta.tool_use {
+                    if let Some(input) = tool_delta.input {
+                        block.args_buf.push_str(&input);
+                        if let Some(Content::ToolCall {
+                            arguments: ref mut a,
+                            ..
+                        }) = partial.content.get_mut(content_block_index)
+                        {
+                            *a = serde_json::from_str(&block.args_buf)
+                                .unwrap_or(Value::String(block.args_buf.clone()));
+                        }
+                        let _ = tx
+                            .send(StreamEvent::ToolCallDelta {
+                                content_index: content_block_index,
+                                delta: input,
+                            })
+                            .await;
+                    }
+                }
+            }
+        }
+
+        BedrockStreamEvent::ContentBlockStop {
+            content_block_index,
+        } => {
+            if let Some(block) = blocks.remove(&content_block_index) {
+                match block.kind {
+                    BlockKind::Text => {
+                        let _ = tx
+                            .send(StreamEvent::TextEnd {
+                                content_index: content_block_index,
+                                content: block.text_buf,
+                                partial: partial.clone(),
+                            })
+                            .await;
+                    }
+                    BlockKind::ToolUse => {
+                        let args = serde_json::from_str(&block.args_buf)
+                            .unwrap_or(Value::Object(Default::default()));
+                        let tool_call = ToolCall {
+                            id: block.tool_id,
+                            name: block.tool_name,
+                            arguments: args,
+                        };
+                        let _ = tx
+                            .send(StreamEvent::ToolCallEnd {
+                                content_index: content_block_index,
+                                tool_call,
+                                partial: partial.clone(),
+                            })
+                            .await;
+                    }
+                }
+            }
+        }
+
+        BedrockStreamEvent::MessageStop { stop_reason } => {
+            partial.stop_reason = map_stop_reason(&stop_reason);
+        }
+
+        BedrockStreamEvent::Metadata { metadata } => {
+            if let Some(usage) = metadata.usage {
+                partial.usage.input = usage.input_tokens;
+                partial.usage.output = usage.output_tokens;
+                partial.usage.total_tokens = usage.input_tokens + usage.output_tokens;
+            }
+        }
     }
 }
 
@@ -785,5 +978,81 @@ mod tests {
         assert_eq!(map_stop_reason("max_tokens"), StopReason::Length);
         assert_eq!(map_stop_reason("tool_use"), StopReason::ToolUse);
         assert_eq!(map_stop_reason("stop_sequence"), StopReason::Stop);
+    }
+
+    /// Build a valid AWS event stream frame from a payload and headers.
+    fn build_event_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
+        // Build headers: :event-type header (type 7 = string)
+        let mut headers = Vec::new();
+        let name = b":event-type";
+        headers.push(name.len() as u8);
+        headers.extend_from_slice(name);
+        headers.push(7u8); // string type
+        let val = event_type.as_bytes();
+        headers.extend_from_slice(&(val.len() as u16).to_be_bytes());
+        headers.extend_from_slice(val);
+
+        let headers_length = headers.len() as u32;
+        // total = 12 (prelude) + headers + payload + 4 (message CRC)
+        let total_length = 12 + headers.len() + payload.len() + 4;
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(total_length as u32).to_be_bytes());
+        frame.extend_from_slice(&headers_length.to_be_bytes());
+        // prelude CRC covers first 8 bytes
+        let prelude_crc = crc32fast::hash(&frame[..8]);
+        frame.extend_from_slice(&prelude_crc.to_be_bytes());
+        frame.extend_from_slice(&headers);
+        frame.extend_from_slice(payload);
+        // message CRC covers everything so far
+        let message_crc = crc32fast::hash(&frame);
+        frame.extend_from_slice(&message_crc.to_be_bytes());
+        frame
+    }
+
+    #[test]
+    fn parse_valid_event_stream_frame() {
+        let payload = b"{\"type\":\"messageStart\",\"message\":{\"role\":\"assistant\"}}";
+        let frame = build_event_frame("MessageStart", payload);
+
+        let result = parse_event_stream_frame(&frame).unwrap().unwrap();
+        assert_eq!(result.0, "MessageStart");
+        assert_eq!(result.1, payload);
+        assert_eq!(result.2, frame.len());
+    }
+
+    #[test]
+    fn parse_event_stream_crc_mismatch() {
+        let payload = b"{\"type\":\"messageStart\",\"message\":{\"role\":\"assistant\"}}";
+        let mut frame = build_event_frame("MessageStart", payload);
+        // Corrupt a byte in the payload to trigger CRC mismatch
+        if let Some(byte) = frame.get_mut(15) {
+            *byte ^= 0xFF;
+        }
+        let result = parse_event_stream_frame(&frame);
+        assert!(result.is_err(), "should fail on CRC mismatch");
+    }
+
+    #[test]
+    fn parse_event_stream_headers_roundtrip() {
+        let mut buf = Vec::new();
+        // Header: ":event-type" = "ContentBlockDelta"
+        let name = b":event-type";
+        buf.push(name.len() as u8);
+        buf.extend_from_slice(name);
+        buf.push(7u8); // string type
+        let val = b"ContentBlockDelta";
+        buf.extend_from_slice(&(val.len() as u16).to_be_bytes());
+        buf.extend_from_slice(val);
+
+        let headers = parse_event_stream_headers(&buf).unwrap();
+        assert_eq!(headers.get(":event-type").unwrap(), "ContentBlockDelta");
+    }
+
+    #[test]
+    fn parse_event_stream_incomplete_returns_none() {
+        // Less than 12 bytes → not enough data
+        let result = parse_event_stream_frame(&[0u8; 8]).unwrap();
+        assert!(result.is_none());
     }
 }

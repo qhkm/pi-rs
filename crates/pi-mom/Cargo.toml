@@ -29,3 +29,4 @@ tokio-tungstenite = "0.21"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"

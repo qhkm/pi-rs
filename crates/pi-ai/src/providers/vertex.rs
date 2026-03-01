@@ -15,9 +15,10 @@
 /// Optional:
 /// - GOOGLE_APPLICATION_CREDENTIALS (path to service account key file)
 ///
-/// **Limitations:**
-/// - Service account JWT signing is not yet implemented.  Use `gcloud auth
-///   application-default login` or set a static access token.
+/// **Authentication Methods:**
+/// - Service account JSON key files (JWT signing with RS256)
+/// - Application Default Credentials via `gcloud auth application-default login`
+/// - Static access tokens
 
 use std::collections::HashMap;
 
@@ -168,19 +169,77 @@ impl VertexProvider {
     }
 
     /// Fetch access token using service account credentials.
+    ///
+    /// Builds a JWT assertion signed with the service account's private key,
+    /// then exchanges it for an access token via the token endpoint.
     async fn fetch_service_account_token(
         &self,
-        _client_email: &str,
-        _private_key: &str,
-        _token_uri: &str,
+        client_email: &str,
+        private_key: &str,
+        token_uri: &str,
     ) -> Result<String> {
-        // Sign JWT (simplified - in production would use a JWT library)
-        // For now, we'll return an error suggesting ADC
-        Err(PiAiError::Auth(
-            "Service account JWT signing not yet implemented. \
-             Please use GOOGLE_APPLICATION_CREDENTIALS with gcloud or set a static access token."
-                .to_string(),
-        ))
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use serde::{Deserialize as De, Serialize as Se};
+
+        #[derive(Se)]
+        struct Claims<'a> {
+            iss: &'a str,
+            aud: &'a str,
+            iat: i64,
+            exp: i64,
+            scope: &'a str,
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let claims = Claims {
+            iss: client_email,
+            aud: token_uri,
+            iat: now,
+            exp: now + 3600,
+            scope: "https://www.googleapis.com/auth/cloud-platform",
+        };
+
+        let header = Header::new(Algorithm::RS256);
+        let encoding_key = EncodingKey::from_rsa_pem(private_key.as_bytes())
+            .map_err(|e| PiAiError::Auth(format!("Invalid RSA private key: {e}")))?;
+
+        let jwt = encode(&header, &claims, &encoding_key)
+            .map_err(|e| PiAiError::Auth(format!("JWT signing failed: {e}")))?;
+
+        // Exchange the JWT assertion for an access token
+        #[derive(De)]
+        struct TokenResponse {
+            access_token: String,
+        }
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(token_uri)
+            .form(&[
+                (
+                    "grant_type",
+                    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                ),
+                ("assertion", &jwt),
+            ])
+            .send()
+            .await
+            .map_err(|e| PiAiError::Auth(format!("Token exchange request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(PiAiError::Auth(format!(
+                "Token exchange failed (HTTP {status}): {body}"
+            )));
+        }
+
+        let token_resp: TokenResponse = resp
+            .json()
+            .await
+            .map_err(|e| PiAiError::Auth(format!("Failed to parse token response: {e}")))?;
+
+        Ok(token_resp.access_token)
     }
 
     /// Fetch access token using Application Default Credentials.
@@ -772,5 +831,43 @@ mod tests {
         assert_eq!(map_stop_reason("STOP"), StopReason::Stop);
         assert_eq!(map_stop_reason("MAX_TOKENS"), StopReason::Length);
         assert_eq!(map_stop_reason("SAFETY"), StopReason::Error);
+    }
+
+    #[test]
+    fn jwt_claims_serialize() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct Claims<'a> {
+            iss: &'a str,
+            aud: &'a str,
+            iat: i64,
+            exp: i64,
+            scope: &'a str,
+        }
+
+        let claims = Claims {
+            iss: "test@project.iam.gserviceaccount.com",
+            aud: "https://oauth2.googleapis.com/token",
+            iat: 1700000000,
+            exp: 1700003600,
+            scope: "https://www.googleapis.com/auth/cloud-platform",
+        };
+
+        let json = serde_json::to_value(&claims).expect("claims should serialize");
+        assert_eq!(
+            json["iss"].as_str().unwrap(),
+            "test@project.iam.gserviceaccount.com"
+        );
+        assert_eq!(
+            json["aud"].as_str().unwrap(),
+            "https://oauth2.googleapis.com/token"
+        );
+        assert_eq!(json["iat"].as_i64().unwrap(), 1700000000);
+        assert_eq!(json["exp"].as_i64().unwrap(), 1700003600);
+        assert_eq!(
+            json["scope"].as_str().unwrap(),
+            "https://www.googleapis.com/auth/cloud-platform"
+        );
     }
 }
