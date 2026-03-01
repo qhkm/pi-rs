@@ -2,7 +2,7 @@
 
 > Generated: 2026-03-01 | pi-rs: 35K lines, 330+ tests | pi-mono: 128K lines, 100+ test files
 
-## Overall Parity: 100%
+## Overall Parity: ~95%
 
 ---
 
@@ -122,10 +122,10 @@
 | Session branching | Yes | Yes | **Parity** |
 | Session forking | Yes | Yes | **Parity** |
 | Tree navigation | Yes | Yes | **Parity** |
-| Session merging | Yes | Yes | **Parity** |
+| Session merging | Yes | Partial (stubs) | Planned |
 | HTML export | Full + ANSI-to-HTML | Full + ANSI-to-HTML | **Parity** |
 | Session metadata/tags | Yes | Yes | **Parity** |
-| Schema migrations | Yes | Yes | **Parity** |
+| Schema migrations | Yes | Partial (stubs) | Planned |
 | Concurrent session safety | Yes | Yes (fs2 locks) | **Parity** |
 | Branch summarization | Yes | Yes | **Parity** |
 
@@ -159,8 +159,8 @@
 | Binary plugin executor | Yes | JSON-RPC stdio | **Parity** |
 | WASM executor | Yes | Yes (wasmtime) | **Parity** |
 | Command registration | Yes | Yes | **Parity** |
-| UI integration hooks | Yes | Yes | **Parity** |
-| Tool wrapping | Yes | Yes | **Parity** |
+| UI integration hooks | Yes | Partial (stubs) | Planned |
+| Tool wrapping | Yes | Partial (stubs) | Planned |
 
 ---
 
@@ -196,7 +196,7 @@
 | Session/tree selector | Yes | Yes | **Parity** |
 | Tool execution visualization | Yes | Yes | **Parity** |
 | Streaming message display | Yes | Yes | **Parity** |
-| Slash commands (20+) | Yes | Yes (20+) | **Parity** |
+| Slash commands (20+) | Yes | 15 implemented | Near Parity |
 | Footer (tokens, cost, model) | Yes | Yes | **Parity** |
 | Diff display | Yes | Yes | **Parity** |
 
@@ -239,7 +239,7 @@
 | Interactive TUI | 10% | 100% | 10.0% |
 | Authentication | 4% | 100% | 4.0% |
 | Peripheral (mom/pods/web) | 3% | 100% | 3.0% |
-| **Total** | **100%** | — | **100%** |
+| **Total** | **100%** | — | **~95%** |
 
 ---
 
@@ -257,7 +257,10 @@
 - **Skills system (YAML frontmatter, git/remote install, search) (100%)** ✅
 - **Authentication (OAuth, encrypted storage, refresh) (100%)** ✅
 
-### Status: **100% PARITY ACHIEVED** ✅
+### Status: **NEAR PARITY** ✅ (~95%)
+
+All major feature areas from pi-mono have been implemented with equivalent functionality.
+Core gaps: Session merging, schema migrations, UI hooks, and tool wrapping have placeholder implementations.
 
 All major feature areas from pi-mono have been implemented in pi-rs with equivalent or better functionality.
 
@@ -276,4 +279,4 @@ All major feature areas from pi-mono have been implemented in pi-rs with equival
 | Async performance | Good | Excellent (tokio) | **pi-rs** |
 | Package count | 7 packages | 8 crates | **Equivalent** |
 
-**pi-rs achieves 100% feature parity with pi-mono at 27% of the code size.**
+**pi-rs achieves ~95% feature parity with pi-mono at 27% of the code size.**

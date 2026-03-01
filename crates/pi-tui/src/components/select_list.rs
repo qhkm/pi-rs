@@ -164,6 +164,19 @@ impl SelectList {
         self.ensure_scroll();
         self.dirty = true;
     }
+
+    /// Select an item by its index in the original items list.
+    pub fn select_index(&mut self, index: usize) {
+        if index >= self.items.len() {
+            return;
+        }
+        // Find the position in filtered_items
+        if let Some(pos) = self.filtered_items.iter().position(|&i| i == index) {
+            self.selected_index = pos;
+            self.ensure_scroll();
+            self.dirty = true;
+        }
+    }
 }
 
 impl Component for SelectList {

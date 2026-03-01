@@ -83,37 +83,22 @@ impl WasmModule {
     /// Execute the WASM module with the given input.
     #[cfg(feature = "wasm")]
     pub async fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value> {
-        use wasmtime::{AsContextMut, Store, TypedFunc};
+        use wasmtime::{Store, TypedFunc};
         
-        // Create WASI context if enabled
-        let wasi_ctx = if self.config.enable_wasi {
-            let ctx = wasmtime_wasi::WasiCtxBuilder::new()
-                .inherit_stdio()
-                .build();
-            Some(ctx)
-        } else {
-            None
-        };
+        // Create WASI context
+        let wasi_ctx = wasmtime_wasi::WasiCtxBuilder::new()
+            .inherit_stdio()
+            .build();
         
         // Create store with fuel limit for timeout
-        let mut store = if let Some(wasi) = wasi_ctx {
-            let mut store = Store::new(&self.engine, wasi);
-            store.add_fuel(self.config.timeout_secs * 1_000_000)
-                .context("Failed to add fuel")?;
-            store
-        } else {
-            let mut store = Store::new(&self.engine, ());
-            store.add_fuel(self.config.timeout_secs * 1_000_000)
-                .context("Failed to add fuel")?;
-            store
-        };
+        let mut store = Store::new(&self.engine, wasi_ctx);
+        store.add_fuel(self.config.timeout_secs * 1_000_000)
+            .context("Failed to add fuel")?;
         
         // Create linker and add WASI
         let mut linker = wasmtime::Linker::new(&self.engine);
-        if self.config.enable_wasi {
-            wasmtime_wasi::add_to_linker(&mut linker, |s| s)
-                .context("Failed to add WASI to linker")?;
-        }
+        wasmtime_wasi::add_to_linker(&mut linker, |s| s)
+            .context("Failed to add WASI to linker")?;
         
         // Instantiate the module
         let instance = linker.instantiate(&mut store, &self.module)
@@ -133,8 +118,21 @@ impl WasmModule {
             .get_memory(&mut store, "memory")
             .context("WASM module missing 'memory' export")?;
         
-        // Write input to memory (simple allocation at offset 1024)
-        let input_ptr = 1024i32;
+        // Try to use malloc export if available, otherwise use fixed offset
+        let input_ptr: i32 = if let Some(allocate) = instance.get_typed_func::<i32, i32>(&mut store, "malloc").ok() {
+            allocate.call(&mut store, input_bytes.len() as i32)
+                .context("WASM malloc failed")?
+        } else {
+            // Fixed offset allocation - ensure it doesn't exceed memory bounds
+            let ptr = 1024i32;
+            let memory_size = memory.data_size(&store);
+            if ptr as usize + input_bytes.len() > memory_size {
+                anyhow::bail!("Input too large for WASM memory: {} bytes needed, {} available", 
+                    input_bytes.len(), memory_size - ptr as usize);
+            }
+            ptr
+        };
+        
         memory.write(&mut store, input_ptr as usize, input_bytes)
             .context("Failed to write input to WASM memory")?;
         

@@ -168,7 +168,23 @@ struct ExtensionCommandHandler {
 impl CommandHandler for ExtensionCommandHandler {
     fn execute(&self, args: &[String]) -> Result<String> {
         // For now, commands are executed as shell scripts in the extension directory
-        let script_path = self.extension_path.join("commands").join(format!("{}.sh", self.command.name));
+        // Sanitize command name to prevent path traversal
+        let command_name = &self.command.name;
+        if command_name.contains('/') || command_name.contains('\\') || command_name.contains("..") {
+            anyhow::bail!("Invalid command name: {}", command_name);
+        }
+        
+        let script_path = self.extension_path.join("commands").join(format!("{}.sh", command_name));
+        
+        // Ensure the resolved path is within the extension directory
+        let canonical_script = script_path.canonicalize().ok();
+        let canonical_ext = self.extension_path.canonicalize().ok();
+        
+        if let (Some(script), Some(ext)) = (&canonical_script, &canonical_ext) {
+            if !script.starts_with(ext) {
+                anyhow::bail!("Command script escapes extension directory");
+            }
+        }
         
         if !script_path.exists() {
             anyhow::bail!("Command script not found: {}", script_path.display());

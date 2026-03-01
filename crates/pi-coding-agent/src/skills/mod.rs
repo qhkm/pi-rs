@@ -177,7 +177,7 @@ pub struct ActiveSkills {
 
 impl ActiveSkills {
     pub fn set(&mut self, name: &str) {
-        self.names.insert(name.to_string());
+        self.names.insert(name.to_lowercase());
     }
 
     pub fn clear(&mut self) {
@@ -269,8 +269,10 @@ pub async fn install_skill_from_git(
     let temp_dir = tempfile::tempdir()?;
     let clone_path = temp_dir.path().join("skill");
     
+    let clone_path_str = clone_path.to_str()
+        .context("Invalid UTF-8 in clone path")?;
     let output = tokio::process::Command::new("git")
-        .args(["clone", "--depth", "1", git_url, clone_path.to_str().unwrap()])
+        .args(["clone", "--depth", "1", git_url, clone_path_str])
         .output()
         .await
         .context("Failed to execute git clone")?;
@@ -320,6 +322,9 @@ pub async fn install_skill_from_url(
     
     // Download skill file
     let response = reqwest::get(url).await.context("Failed to download skill")?;
+    if !response.status().is_success() {
+        anyhow::bail!("Failed to download skill: HTTP {}", response.status());
+    }
     let content = response.text().await.context("Failed to read response")?;
     
     // Parse to get name
@@ -469,22 +474,6 @@ fn parse_skill_content_full(
                             }
                         }
                     }
-                }
-            }
-            
-            // Parse tags if present as YAML list
-            if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(fm) {
-                if let Some(tags) = yaml.get("tags").and_then(|t| t.as_sequence()) {
-                    metadata.tags = tags
-                        .iter()
-                        .filter_map(|t| t.as_str().map(|s| s.to_string()))
-                        .collect();
-                }
-                if let Some(deps) = yaml.get("dependencies").and_then(|d| d.as_sequence()) {
-                    metadata.dependencies = deps
-                        .iter()
-                        .filter_map(|d| d.as_str().map(|s| s.to_string()))
-                        .collect();
                 }
             }
         }

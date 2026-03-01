@@ -115,7 +115,7 @@ impl ModelSelector {
     pub fn set_selected(&mut self, id: &str) {
         self.selected_id = Some(id.to_string());
         if let Some(idx) = self.models.iter().position(|m| m.id == id) {
-            // Update select_list selection - this would need to be added to SelectList
+            self.select_list.select_index(idx);
         }
     }
 
@@ -326,7 +326,7 @@ impl ThinkingSelector {
         self.selected_id = Some(id.to_string());
         // Find index and update select_list
         if let Some(idx) = self.levels.iter().position(|l| l.id == id) {
-            // Would need set_selected_index on SelectList
+            self.select_list.select_index(idx);
         }
     }
 
@@ -419,9 +419,138 @@ impl Focusable for ThinkingSelector {
     }
 }
 
+/// Session info for the session selector.
+#[derive(Debug, Clone)]
+pub struct SessionInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub updated_at: Option<String>,
+}
+
+impl SessionInfo {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: String::new(),
+            updated_at: None,
+        }
+    }
+
+    pub fn with_description(mut self, desc: impl Into<String>) -> Self {
+        self.description = desc.into();
+        self
+    }
+
+    pub fn with_updated_at(mut self, time: impl Into<String>) -> Self {
+        self.updated_at = Some(time.into());
+        self
+    }
+}
+
 /// Session selector for selecting from saved sessions.
 pub struct SessionSelector {
+    sessions: Vec<SessionInfo>,
+    selected_id: Option<String>,
     select_list: SelectList,
+}
+
+impl SessionSelector {
+    /// Create a new session selector.
+    pub fn new(sessions: Vec<SessionInfo>) -> Self {
+        let items: Vec<SelectItem> = sessions
+            .iter()
+            .map(|s| {
+                let desc = if let Some(ref time) = s.updated_at {
+                    format!("{} • {}", s.description, time)
+                } else {
+                    s.description.clone()
+                };
+                SelectItem::new(s.id.clone(), s.name.clone()).with_description(desc)
+            })
+            .collect();
+
+        Self {
+            sessions,
+            selected_id: None,
+            select_list: SelectList::new(items, 10),
+        }
+    }
+
+    /// Set the selected session by ID.
+    pub fn set_selected(&mut self, id: &str) {
+        self.selected_id = Some(id.to_string());
+        if let Some(idx) = self.sessions.iter().position(|s| s.id == id) {
+            self.select_list.select_index(idx);
+        }
+    }
+
+    /// Get the selected session ID.
+    pub fn selected_id(&self) -> Option<&str> {
+        self.selected_id.as_deref()
+    }
+
+    /// Get the selected session info.
+    pub fn selected_session(&self) -> Option<&SessionInfo> {
+        self.selected_id
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| s.id == *id))
+    }
+
+    /// Confirm selection.
+    pub fn confirm_selection(&mut self) {
+        if let Some(item) = self.select_list.selected_item() {
+            self.selected_id = Some(item.value.clone());
+        }
+    }
+
+    /// Set on select callback.
+    pub fn on_select<F>(&mut self, callback: F)
+    where
+        F: Fn(&SessionInfo) + Send + 'static,
+    {
+        let sessions = self.sessions.clone();
+        self.select_list.on_select = Some(Box::new(move |item| {
+            if let Some(session) = sessions.iter().find(|s| s.id == item.value) {
+                callback(session);
+            }
+        }));
+    }
+}
+
+impl Component for SessionSelector {
+    fn render(&self, width: u16) -> Vec<String> {
+        let mut lines = self.select_list.render(width);
+        
+        if !lines.is_empty() {
+            lines.insert(0, "\x1b[1mSelect Session\x1b[0m".to_string());
+        }
+        
+        lines
+    }
+
+    fn handle_input(&mut self, data: &str) -> InputResult {
+        self.select_list.handle_input(data)
+    }
+
+    fn invalidate(&mut self) {
+        self.select_list.invalidate();
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.select_list.is_dirty()
+    }
+}
+
+impl Focusable for SessionSelector {
+    fn focused(&self) -> bool {
+        self.select_list.focused()
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        self.select_list.set_focused(focused);
+    }
 }
 
 /// Quick action selector for slash commands.
