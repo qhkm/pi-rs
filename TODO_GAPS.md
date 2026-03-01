@@ -9,16 +9,34 @@
 
 **Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2, #7, #11, #3, #5  
 **In Progress:** None  
-**Remaining:** 4 items
+**Remaining:** 4 items (all low priority)
 
 ---
 
-## 🟡 HIGH PRIORITY (Medium Effort, High Impact)
+## ✅ COMPLETED
+
+### #4: HTML Export Tests
+**Status:** ✅ Already complete - end-to-end tests exist in `export/html.rs`
+
+### #8: Quoted @mention Parsing
+**Status:** ✅ COMPLETED - `@"path with spaces/file.txt"` syntax supported
+
+### #12: Wrapper Hook Path Validation  
+**Status:** ✅ COMPLETED - Path traversal protection with `canonicalize()` checks
+
+### #13: wrap_line() UTF-8 Bug
+**Status:** ✅ COMPLETED - Replaced byte slicing with character-based iteration
+
+### #16: yank_pop() TODO
+**Status:** ✅ COMPLETED - Proper kill-ring rotation with `last_yank` tracking
 
 ### #9: Wire Hook Dispatch into Agent Loop
 **Status:** ✅ COMPLETED in commit 8b68539
 
----
+- Added `HookRegistry`, `HookEvent`, `HookContext`, `HookResult` types
+- Dispatch at 4 lifecycle points: `BeforeTurn`, `AfterTurn`, `BeforeCompact`, `AfterCompact`
+- Added `register_hook()` method to Agent
+- Handles `Cancel` and `Modified` results appropriately
 
 ### #10: Tool Wrapper Execution Wiring  
 **Status:** ✅ COMPLETED in commit 8b68539
@@ -28,8 +46,6 @@
 - Added `WrapperHookType` enum for before/after distinction
 - Path traversal protection already in place
 
----
-
 ### #1: Merge Test Coverage
 **Status:** ✅ COMPLETED in commit f6a29b9
 
@@ -38,70 +54,16 @@ Added tests for:
 - ID collisions with UUID-like IDs
 - Forked session preservation
 
----
-
-## 🟡 REMAINING HIGH PRIORITY
-**Impact:** 5% | **File:** `crates/pi-agent-core/src/agent/agent_loop.rs`
-
-**What:**
-- Call `hook_registry.dispatch(BeforeTurn)` before each agent iteration
-- Call `hook_registry.dispatch(AfterTurn)` after each turn completes
-- Call `hook_registry.dispatch(BeforeCompact)` before context compaction
-- Call `hook_registry.dispatch(AfterCompact)` after compaction
-
-**Where in agent_loop.rs:**
-- Find the main agent loop (likely around line 80-150)
-- Add hook calls at appropriate lifecycle points
-- Handle `HookResult::Cancel` to abort operations
-- Handle `HookResult::Modified(data)` to use modified data
-
-**Example pattern:**
-```rust
-// Before turn
-let ctx = HookContext { event: BeforeTurn, data: json!({"turn": turn_count }) };
-let results = hook_registry.dispatch(&ctx).await;
-// Check for Cancel or Modified results
-
-// After turn
-let ctx = HookContext { event: AfterTurn, data: json!({"turn": turn_count, "result": ... }) };
-hook_registry.dispatch(&ctx).await;
-```
-
----
-
-### #1: Merge Test Coverage
-**Impact:** 5% | **File:** `crates/pi-coding-agent/src/session/manager.rs` tests
-
-**Add tests for:**
-1. **Branched trees:** Merge session with multiple branches, verify IDs remap correctly
-2. **ID collisions:** Merge when both sessions have overlapping entry IDs
-3. **Concurrent merges:** Test merging same source to multiple targets simultaneously
-4. **Forked-session merging:** Create fork, add entries to both, merge them
-
-**Test pattern:**
-```rust
-#[tokio::test]
-async fn merge_branched_tree_remaps_all_ids() {
-    // Create source with branches
-    // Create target
-    // Merge
-    // Verify no duplicate IDs in result
-    // Verify parent chain integrity
-}
-```
-
----
-
 ### #2: Harden Schema Migrations
 **Status:** ✅ COMPLETED in commit e1d3bf9
 
-**Implemented:**
-1. ✅ Header corruption repair with `parse_header_with_repair()` and `repair_header()`
-2. ✅ Timestamp preservation via `extract_timestamp_from_entry()` - only falls back to `Utc::now()`
-3. ✅ v0 → v1/v2/v3 migration path with proper type inference
-4. ✅ ID collision handling with automatic remapping
-5. ✅ Malformed entry marking with `_malformed` flag
-6. ✅ Parent ID remapping during collision resolution
+Implemented:
+1. Header corruption repair with `parse_header_with_repair()` and `repair_header()`
+2. Timestamp preservation via `extract_timestamp_from_entry()`
+3. v0 → v1/v2/v3 migration path with proper type inference
+4. ID collision handling with automatic remapping
+5. Malformed entry marking with `_malformed` flag
+6. Parent ID remapping during collision resolution
 
 **New tests (+5):**
 - `migrate_session_handles_header_corruption`
@@ -110,15 +72,13 @@ async fn merge_branched_tree_remaps_all_ids() {
 - `migrate_session_handles_id_collisions`
 - `migrate_session_marks_malformed_entries`
 
----
-
 ### #7: @directory Expansion with Globs
 **Status:** ✅ COMPLETED in commit b48976b
 
-**Implemented:**
-- ✅ `@dirname/` → includes all files in directory (non-recursive)
-- ✅ `@dirname/**/*.rs` → glob pattern expansion with `**` support
-- ✅ `@"path with spaces/"` → quoted directory paths with spaces
+Implemented:
+- `@dirname/` → includes all files in directory (non-recursive)
+- `@dirname/**/*.rs` → glob pattern expansion with `**` support
+- `@"path with spaces/"` → quoted directory paths with spaces
 
 **Implementation:**
 - Added `process_directory()` for directory expansion using glob
@@ -135,18 +95,14 @@ async fn merge_branched_tree_remaps_all_ids() {
 - `test_glob_no_matches_kept_as_text`
 - `test_directory_with_images`
 
----
-
-## 🟢 MEDIUM PRIORITY
-
 ### #11: WASM Safety Hardening
 **Status:** ✅ COMPLETED in commit 11d5636
 
-**Implemented:**
-1. ✅ Instruction count limits via fuel metering (1 fuel ≈ 1 instruction)
-2. ✅ Memory bounds checking at configurable offset (default 1024)
-3. ✅ I/O timeout enforcement via epoch interruption + tokio timeout
-4. ✅ Stack depth limits via max_wasm_stack configuration
+Implemented:
+1. Instruction count limits via fuel metering (1 fuel ≈ 1 instruction)
+2. Memory bounds checking at configurable offset (default 1024)
+3. I/O timeout enforcement via epoch interruption + tokio timeout
+4. Stack depth limits via max_wasm_stack configuration
 
 **Additional safety features:**
 - Configurable max_io_ops (default 10,000)
@@ -168,23 +124,19 @@ async fn merge_branched_tree_remaps_all_ids() {
 - `test_wasm_safety_limits`
 - `test_wasm_input_size_limit`
 
----
-
 ### #3: Integration Tests
 **Status:** ✅ COMPLETED in commit bc78ba5
 
-**Added tests in `crates/pi-coding-agent/tests/session_workflow.rs`:**
+Added tests in `crates/pi-coding-agent/tests/session_workflow.rs`:
 - `branch_merge_export_workflow`: Tests branching with multiple branches
 - `session_file_merge_workflow`: Tests merging sessions file-to-file
 - `large_session_stress_test`: 1000 entries, tree building, navigation
 - `merge_performance_test`: Performance testing with 500 entries
 
----
-
 ### #5: Circular Branch Reference Handling
 **Status:** ✅ COMPLETED in commit bc78ba5
 
-**Implemented cycle detection:**
+Implemented cycle detection:
 - `detect_cycles()`: Finds all cycles in parent-child relationships using DFS
 - `dfs_detect_cycle()`: DFS traversal for cycle detection
 - `get_tree()`: Automatically detects and breaks cycles (logs warnings)
@@ -198,7 +150,7 @@ async fn merge_branched_tree_remaps_all_ids() {
 
 ---
 
-## 🔵 LOW PRIORITY (Large Effort)
+## 🔵 LOW PRIORITY (Large Effort, Lower Impact)
 
 ### #14: iTerm2 Inline Image Protocol
 **Impact:** 4% | **File:** `crates/pi-tui/src/` (new image rendering module)
@@ -226,47 +178,32 @@ async fn merge_branched_tree_remaps_all_ids() {
 
 ---
 
-## 📋 Quick Reference: Files to Modify
+## 📊 Summary
 
-| File | Tasks |
-|------|-------|
-| `extensions/mod.rs` | **CRITICAL:** Fix corruption, complete #10 |
-| `agent/agent_loop.rs` | #9: Hook dispatch |
-| `session/manager.rs` | #1, #2, #5: Merge tests, migrations, cycles |
-| `input/file_processor.rs` | #7: Directory/glob expansion |
-| `extensions/wasm.rs` | #11: WASM safety |
-| `tests/integration.rs` | #3: Integration tests |
-| `pi-tui/src/image.rs` (new) | #14, #15: Terminal images |
+### Test Count Progress
+- Initial: 339 tests (~94% parity)
+- After quick wins: 369 tests (~97% parity)
+- After this PR: 398 tests (~99% parity)
 
----
+### Remaining for 100%
+- #14: iTerm2 image protocol (4% impact)
+- #15: Kitty image protocol (3% impact)
+- Additional test coverage to reach 400+ tests
 
-## 🎯 Success Criteria
+### Files Modified in This PR
+```
+crates/pi-agent-core/src/agent/agent_loop.rs       (+169 lines)
+crates/pi-coding-agent/src/extensions/mod.rs       (+171 lines)
+crates/pi-coding-agent/src/extensions/wasm.rs      (+208 lines)
+crates/pi-coding-agent/src/input/file_processor.rs (+220 lines)
+crates/pi-coding-agent/src/session/manager.rs      (+858 lines)
+crates/pi-coding-agent/tests/session_workflow.rs   (+237 lines, new)
+```
 
-After completing items #9, #10, #1, #2, #7:
-- Test count: 339 → 370+
-- Coverage: ~94% → ~98%
-
-After completing all items:
-- Test count: 370 → 400+
-- Coverage: ~98% → 100%
-- PARITY.md updated with all features verified
-
----
-
-## 🚨 Blockers
-
-1. **File corruption in extensions/mod.rs** - Must fix before #10
-2. Missing test infrastructure for integration tests
-3. No existing image rendering in pi-tui (needs new module)
-
----
-
-## 💡 Tips for Next Agent
-
-1. **Start with file corruption fix** - use git to see original state
-2. **For #9:** Look for existing hook calls in agent_loop.rs as reference
-3. **For #1:** Use existing merge tests as template, add edge cases
-4. **For #2:** Add debug logging to migration to see what's happening
-5. **For #7:** Consider using `glob` crate from crates.io
-6. Run `cargo test --workspace` after each change
-7. Update PARITY.md as items are completed
+### Commits
+- 8b68539 feat: implement #9 hook dispatch and #10 tool wrapper wiring
+- f6a29b9 test: add merge test coverage for branched trees and ID collisions (#1)
+- e1d3bf9 feat: harden schema migrations (#2)
+- b48976b feat: add @directory glob expansion support (#7)
+- 11d5636 feat: harden WASM safety with additional limits (#11)
+- bc78ba5 feat: add integration tests and circular branch detection (#3, #5)
