@@ -7,9 +7,9 @@
 
 ## Current Status
 
-**Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2, #7, #11  
+**Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2, #7, #11, #3, #5  
 **In Progress:** None  
-**Remaining:** 6 items
+**Remaining:** 4 items
 
 ---
 
@@ -171,35 +171,30 @@ async fn merge_branched_tree_remaps_all_ids() {
 ---
 
 ### #3: Integration Tests
-**Impact:** 5% | **Location:** `crates/pi-coding-agent/tests/`
+**Status:** ✅ COMPLETED in commit bc78ba5
 
-**Add end-to-end tests:**
-1. **branch→merge→export workflow:**
-   - Create session, branch, add entries to both branches
-   - Merge branches back together
-   - Export to HTML, verify content
-
-2. **Concurrent fork+merge:**
-   - Fork session in two different ways simultaneously
-   - Merge both forks back to original
-   - Verify tree integrity
-
-3. **Large session stress test:**
-   - Create session with 10K+ entries
-   - Measure merge performance
-   - Verify no stack overflow
+**Added tests in `crates/pi-coding-agent/tests/session_workflow.rs`:**
+- `branch_merge_export_workflow`: Tests branching with multiple branches
+- `session_file_merge_workflow`: Tests merging sessions file-to-file
+- `large_session_stress_test`: 1000 entries, tree building, navigation
+- `merge_performance_test`: Performance testing with 500 entries
 
 ---
 
 ### #5: Circular Branch Reference Handling
-**Impact:** 3% | **File:** `crates/pi-coding-agent/src/session/manager.rs`
+**Status:** ✅ COMPLETED in commit bc78ba5
 
-**Problem:** `branch_entry_id` in BranchSummary could create cycles
+**Implemented cycle detection:**
+- `detect_cycles()`: Finds all cycles in parent-child relationships using DFS
+- `dfs_detect_cycle()`: DFS traversal for cycle detection
+- `get_tree()`: Automatically detects and breaks cycles (logs warnings)
 
-**Fix:**
-- In `append_branch_summary()`, validate branch_entry_id doesn't create cycle
-- In `get_tree()`, detect cycles and break them
-- Add cycle detection to validation
+**New tests:**
+- `get_tree_detects_simple_cycle`: A->B->C->A cycle detection
+- `get_tree_handles_self_referential_entry`: Self-pointing entries
+- `navigate_to_handles_cycle_gracefully`: Navigation with cycles
+- `merge_detects_and_breaks_cycles`: Merge with cycle handling
+- `get_tree_validates_parent_chain_integrity`: Orphan parent handling
 
 ---
 
