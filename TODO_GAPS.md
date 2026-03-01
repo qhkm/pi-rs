@@ -7,9 +7,9 @@
 
 ## Current Status
 
-**Completed:** #13, #16, #12, #4, #8, #10, #9, #1  
+**Completed:** #13, #16, #12, #4, #8, #10, #9, #1, #2  
 **In Progress:** None  
-**Remaining:** 9 items
+**Remaining:** 8 items
 
 ---
 
@@ -93,21 +93,22 @@ async fn merge_branched_tree_remaps_all_ids() {
 ---
 
 ### #2: Harden Schema Migrations
-**Impact:** 5% | **File:** `crates/pi-coding-agent/src/session/manager.rs`
+**Status:** ✅ COMPLETED in commit e1d3bf9
 
-**Current issues:**
-1. Uses `Utc::now()` for missing timestamps instead of preserving original
-2. No handling for malformed entries (just skips them)
-3. No v0 → v1 migration path
-4. No handling for header corruption
+**Implemented:**
+1. ✅ Header corruption repair with `parse_header_with_repair()` and `repair_header()`
+2. ✅ Timestamp preservation via `extract_timestamp_from_entry()` - only falls back to `Utc::now()`
+3. ✅ v0 → v1/v2/v3 migration path with proper type inference
+4. ✅ ID collision handling with automatic remapping
+5. ✅ Malformed entry marking with `_malformed` flag
+6. ✅ Parent ID remapping during collision resolution
 
-**Fixes needed:**
-1. Extract timestamp from entry if possible, only use `Utc::now()` as fallback
-2. Add v0 detection (entries without `type` field)
-3. Add repair mode for corrupted headers
-4. Preserve unknown fields during migration
-
-**Code location:** `migrate_session()` function around line 570+
+**New tests (+5):**
+- `migrate_session_handles_header_corruption`
+- `migrate_session_preserves_existing_timestamps`
+- `migrate_session_handles_v0_entries`
+- `migrate_session_handles_id_collisions`
+- `migrate_session_marks_malformed_entries`
 
 ---
 
