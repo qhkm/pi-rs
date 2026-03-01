@@ -455,8 +455,12 @@ fn parse_event_stream_headers(mut buf: &[u8]) -> std::result::Result<HashMap<Str
         let header_type = buf[0];
         buf = &buf[1..];
 
-        // Type 7 = string (16-bit length-prefixed)
+        // AWS event stream header types and their value sizes:
+        //   0=bool_true(0), 1=bool_false(0), 2=u8(1), 3=i8(1),
+        //   4=i16(2), 5=i32(4), 6=i64(8), 7=string(u16-prefixed),
+        //   8=bytes(u16-prefixed), 9=timestamp_i64(8), 10=uuid(16)
         if header_type == 7 {
+            // String: 16-bit length-prefixed
             if buf.len() < 2 {
                 return Err("Header value length truncated".to_string());
             }
@@ -469,9 +473,28 @@ fn parse_event_stream_headers(mut buf: &[u8]) -> std::result::Result<HashMap<Str
             buf = &buf[value_len..];
             headers.insert(name, value);
         } else {
-            // Skip other header types — we don't expect them from Bedrock
-            // but handle gracefully by skipping the value
-            return Err(format!("Unsupported header type: {header_type}"));
+            // Skip non-string headers by reading past their value
+            let skip = match header_type {
+                0 | 1 => 0,          // bool true/false: no value bytes
+                2 | 3 => 1,          // u8/i8
+                4 => 2,              // i16
+                5 => 4,              // i32
+                6 => 8,              // i64
+                8 => {               // bytes: u16-prefixed
+                    if buf.len() < 2 {
+                        return Err("Header value truncated".to_string());
+                    }
+                    let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+                    len + 2
+                }
+                9 => 8,              // timestamp (i64)
+                10 => 16,            // UUID (16 bytes)
+                _ => return Err(format!("Unknown header type: {header_type}")),
+            };
+            if buf.len() < skip {
+                return Err("Header value truncated".to_string());
+            }
+            buf = &buf[skip..];
         }
     }
 
@@ -686,9 +709,12 @@ impl BedrockProvider {
 
                 bin_buf.extend_from_slice(&chunk);
 
-                // Parse complete frames from the buffer
+                // Parse complete frames from the buffer.
+                // Track total bytes consumed and drain once after the loop
+                // to avoid O(n) shifts on every frame.
+                let mut cursor = 0usize;
                 loop {
-                    match parse_event_stream_frame(&bin_buf) {
+                    match parse_event_stream_frame(&bin_buf[cursor..]) {
                         Ok(Some((_event_type, payload, consumed))) => {
                             // Parse the JSON payload as a Bedrock event
                             if !payload.is_empty() {
@@ -709,15 +735,18 @@ impl BedrockProvider {
                                     );
                                 }
                             }
-                            bin_buf.drain(..consumed);
+                            cursor += consumed;
                         }
                         Ok(None) => break, // need more data
                         Err(e) => {
                             warn!("Event stream frame error: {e}");
-                            bin_buf.clear();
+                            cursor = bin_buf.len(); // discard all
                             break;
                         }
                     }
+                }
+                if cursor > 0 {
+                    bin_buf.drain(..cursor);
                 }
             }
         } else {
@@ -1054,5 +1083,37 @@ mod tests {
         // Less than 12 bytes → not enough data
         let result = parse_event_stream_frame(&[0u8; 8]).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_event_stream_headers_skips_non_string_types() {
+        let mut buf = Vec::new();
+
+        // Header 1: bool_true (type 0) — no value bytes
+        let name1 = b":flags";
+        buf.push(name1.len() as u8);
+        buf.extend_from_slice(name1);
+        buf.push(0u8); // bool_true
+
+        // Header 2: i32 (type 5) — 4 value bytes
+        let name2 = b":content-type";
+        buf.push(name2.len() as u8);
+        buf.extend_from_slice(name2);
+        buf.push(5u8); // i32
+        buf.extend_from_slice(&42i32.to_be_bytes());
+
+        // Header 3: string (type 7) — should be parsed normally
+        let name3 = b":event-type";
+        buf.push(name3.len() as u8);
+        buf.extend_from_slice(name3);
+        buf.push(7u8);
+        let val = b"MessageStart";
+        buf.extend_from_slice(&(val.len() as u16).to_be_bytes());
+        buf.extend_from_slice(val);
+
+        let headers = parse_event_stream_headers(&buf).unwrap();
+        // Non-string headers are skipped, string header is parsed
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers.get(":event-type").unwrap(), "MessageStart");
     }
 }

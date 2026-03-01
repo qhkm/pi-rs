@@ -212,8 +212,8 @@ impl VertexProvider {
             access_token: String,
         }
 
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = self
+            .client
             .post(token_uri)
             .form(&[
                 (
