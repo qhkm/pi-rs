@@ -6,7 +6,7 @@
 
 > **Minimal core. Maximum extensibility. Your workflow, your way.**
 
-A high-performance, terminal-native AI coding agent built in Rust. Features 101+ LLM models across 17 cloud providers, advanced TUI with streaming responses, and extensible plugin architecture.
+A high-performance, terminal-native AI coding agent built in Rust. This is a Rust port of [pi-mono](https://github.com/badlogic/pi-mono), originally created by [Mario Zechner](https://github.com/badlogic). Features 101+ LLM models across 17 cloud providers, advanced TUI with streaming responses, and extensible plugin architecture.
 
 **Philosophy:** Pi provides primitives, not features. Sub-agents, plan mode, permission gates—build them yourself or install a package. Adapt pi to your workflows, not the other way around. [Read more →](PHILOSOPHY.md)
 
