@@ -181,19 +181,24 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
                         };
                         pi_ai::register_provider(&api_key, new_provider.clone());
                         
-                        // Try to update the agent's provider and model
-                        if let Some(agent_mut) = Arc::get_mut(&mut agent) {
-                            agent_mut.update_provider(new_provider);
-                            // Also update to an appropriate default model for this provider
-                            let default_model = get_default_model_for_provider(detected);
-                            let model_id = default_model.id.clone();
-                            agent_mut.update_model(default_model);
-                            println!("[auth] provider '{}' activated with model '{}'", detected, model_id);
-                        } else {
-                            println!("[auth] provider '{}' registered. New conversations will use it.", detected);
-                            println!("[auth] (restart with: pi --provider {} --model <model-id>)", detected);
-                            println!("[auth] suggested model: {}", get_default_model_for_provider(detected).id);
-                        }
+                        // Update the agent's provider and model
+                        // Get the API identifier for the detected provider
+                        let provider_api = match detected {
+                            "anthropic" => "anthropic-messages",
+                            "openai" => "openai-completions",
+                            "google" => "google-generative-ai",
+                            "groq" => "openai-completions",
+                            "openrouter" => "openai-completions",
+                            _ => "openai-completions",
+                        };
+                        // Update the runtime provider (works even with shared Arc)
+                        agent.update_provider_api(provider_api);
+                        // Also update to an appropriate default model for this provider
+                        let default_model = get_default_model_for_provider(detected);
+                        let model_id = default_model.id.clone();
+                        agent.update_model(default_model).await;
+                        println!("[auth] provider '{}' activated with model '{}'", detected, model_id);
+                        println!("[auth] you can now send messages without restarting");
                     }
                     Err(e) => {
                         println!("[auth] warning: failed to create provider: {}", e);

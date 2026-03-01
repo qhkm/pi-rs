@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
     };
 
     let config = AgentConfig {
-        provider, // Optional - can be None if no API key set
+        provider_api: Some(provider_name.to_string()), // Looked up from global registry on each use
         model,
         system_prompt: Some(system_prompt),
         max_turns: 50,

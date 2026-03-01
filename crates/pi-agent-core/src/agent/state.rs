@@ -38,8 +38,9 @@ pub fn default_thinking_budgets() -> HashMap<ThinkingLevel, u64> {
 
 /// Configuration for creating an Agent
 pub struct AgentConfig {
-    /// The LLM provider to use (None = not configured yet, will show error in TUI)
-    pub provider: Option<Arc<dyn LLMProvider>>,
+    /// The LLM provider API identifier to use (e.g., "openai-completions", "anthropic-messages")
+    /// Provider is looked up from the global registry on each request, allowing runtime changes.
+    pub provider_api: Option<String>,
     /// The model to use (placeholder used if provider not configured)
     pub model: Model,
     /// System prompt
@@ -119,6 +120,14 @@ impl AgentConfig {
             .unwrap_or_else(|| *default_thinking_budgets().get(&level).unwrap_or(&0));
 
         Some(budget)
+    }
+
+    /// Get the provider from the global registry.
+    /// Looks up by provider_api identifier, allowing runtime provider changes.
+    pub fn get_provider(&self) -> Option<Arc<dyn LLMProvider>> {
+        self.provider_api.as_ref().and_then(|api| {
+            pi_ai::get_provider(api)
+        })
     }
 }
 

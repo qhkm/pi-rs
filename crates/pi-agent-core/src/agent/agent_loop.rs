@@ -39,6 +39,9 @@ pub type ContextTransformFn = Box<dyn Fn(&mut Vec<Message>) + Send + Sync>;
 pub struct Agent {
     pub config: AgentConfig,
     pub shared: Arc<AgentSharedState>,
+    /// Runtime provider API override (set via /setkey). Takes precedence over config.
+    /// Uses std::sync::RwLock since these methods are not async.
+    runtime_provider_api: std::sync::RwLock<Option<String>>,
     /// Conversation messages (stored here so Agent owns them directly)
     messages: tokio::sync::RwLock<Vec<AgentMessage>>,
     current_model: tokio::sync::RwLock<Model>,
@@ -89,6 +92,7 @@ impl Agent {
 
         Self {
             config,
+            runtime_provider_api: std::sync::RwLock::new(None),
             shared: Arc::new(AgentSharedState::new_with_compaction(compaction_enabled)),
             messages: tokio::sync::RwLock::new(Vec::new()),
             current_model: tokio::sync::RwLock::new(current_model),
@@ -177,21 +181,41 @@ impl Agent {
         let _ = self.shared.abort_tx.send(false);
     }
 
-    /// Update the LLM provider at runtime.
+    /// Update the LLM provider API identifier at runtime.
     ///
     /// This is useful when the user sets a new API key via `/setkey` and wants
     /// to switch providers without restarting the session.
-    pub fn update_provider(&mut self, provider: Arc<dyn LLMProvider>) {
-        self.config.provider = Some(provider);
+    /// The provider must already be registered in the global registry.
+    pub fn update_provider_api(&self, provider_api: impl Into<String>) {
+        if let Ok(mut guard) = self.runtime_provider_api.write() {
+            *guard = Some(provider_api.into());
+        }
+    }
+
+    /// Get the effective provider API identifier (runtime override or config).
+    fn get_provider_api(&self) -> Option<String> {
+        // Check runtime override first
+        if let Ok(runtime) = self.runtime_provider_api.read() {
+            if runtime.is_some() {
+                return runtime.clone();
+            }
+        }
+        // Fall back to config
+        self.config.provider_api.clone()
+    }
+    
+    /// Get the current model (checking for runtime updates)
+    pub async fn get_current_model(&self) -> Model {
+        self.current_model.read().await.clone()
     }
 
     /// Update the model at runtime.
     ///
     /// This should be called together with update_provider when switching
     /// to a different provider that uses different models.
-    pub fn update_model(&mut self, model: Model) {
-        self.config.model = model.clone();
-        // Also update the current_model field
+    pub async fn update_model(&self, model: Model) {
+        // Update the current_model field (config.model is not updated since
+        // we look up provider dynamically from registry)
         if let Ok(mut current) = self.current_model.try_write() {
             *current = model;
         }
@@ -685,7 +709,8 @@ impl Agent {
         };
 
         // Spawn the streaming task
-        let provider = self.config.provider.clone().ok_or(AgentError::NoProvider)?;
+        let provider_api = self.get_provider_api().ok_or(AgentError::NoProvider)?;
+        let provider = pi_ai::get_provider(&provider_api).ok_or(AgentError::NoProvider)?;
         let model = self.current_model.read().await.clone();
         let context_clone = context.clone();
         let stream_handle = tokio::spawn(async move {
@@ -1078,7 +1103,7 @@ impl Agent {
         });
 
         let model = self.current_model.read().await.clone();
-        let provider = self.config.provider.clone().ok_or_else(|| {
+        let provider_api = self.get_provider_api().ok_or_else(|| {
             self.emit(AgentEvent::AutoCompactionEnd {
                 success: false,
                 tokens_before,
@@ -1086,6 +1111,15 @@ impl Agent {
                 error: Some("No provider configured".to_string()),
             });
             AgentError::Compaction("No provider configured".to_string())
+        })?;
+        let provider = pi_ai::get_provider(&provider_api).ok_or_else(|| {
+            self.emit(AgentEvent::AutoCompactionEnd {
+                success: false,
+                tokens_before,
+                tokens_after: None,
+                error: Some("Provider not found in registry".to_string()),
+            });
+            AgentError::Compaction("Provider not found in registry".to_string())
         })?;
         let summary_msg = provider
             .complete(&model, &summary_context, &options)

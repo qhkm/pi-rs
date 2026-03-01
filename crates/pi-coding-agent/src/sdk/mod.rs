@@ -155,7 +155,7 @@ impl AgentSession {
 
         // Build AgentConfig.
         let config = AgentConfig {
-            provider: Some(provider),
+            provider_api: Some(options.provider.clone()),
             model,
             system_prompt: Some(system_prompt),
             max_turns: options.max_turns,
