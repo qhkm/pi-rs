@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use pi_agent_core::context::compaction::{
     build_branch_summary_prompt, estimate_tokens_str, serialize_conversation,
     BranchSummarizationSettings,
@@ -365,6 +365,25 @@ impl SessionManager {
                     .push(id.clone());
             }
         }
+        
+        // Detect and report cycles
+        let cycles = Self::detect_cycles(&parent_map);
+        if !cycles.is_empty() {
+            for cycle in &cycles {
+                tracing::warn!("Cycle detected in session tree: {:?}", cycle);
+            }
+            // Remove cycle edges to break them
+            for cycle in cycles {
+                if cycle.len() >= 2 {
+                    let last = cycle.last().unwrap();
+                    let first = cycle.first().unwrap();
+                    // Remove the parent link that creates the cycle
+                    if let Some(children) = children_map.get_mut(last) {
+                        children.retain(|c| c != first);
+                    }
+                }
+            }
+        }
 
         // Pass 2.5: cycle detection — walk from each node upward through
         // parent_id links with a visited set.  If the same ID appears twice
@@ -400,6 +419,69 @@ impl SessionManager {
             .collect();
 
         Ok(nodes)
+    }
+    
+    /// Detect cycles in the parent map using DFS.
+    /// Returns a list of cycles found, where each cycle is a list of entry IDs.
+    fn detect_cycles(parent_map: &HashMap<String, Option<String>>) -> Vec<Vec<String>> {
+        let mut cycles = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut in_stack = std::collections::HashSet::new();
+        
+        for node_id in parent_map.keys() {
+            if !visited.contains(node_id) {
+                Self::dfs_detect_cycle(
+                    node_id,
+                    parent_map,
+                    &mut visited,
+                    &mut in_stack,
+                    &mut Vec::new(),
+                    &mut cycles,
+                );
+            }
+        }
+        
+        cycles
+    }
+    
+    fn dfs_detect_cycle(
+        node_id: &str,
+        parent_map: &HashMap<String, Option<String>>,
+        visited: &mut std::collections::HashSet<String>,
+        in_stack: &mut std::collections::HashSet<String>,
+        path: &mut Vec<String>,
+        cycles: &mut Vec<Vec<String>>,
+    ) {
+        visited.insert(node_id.to_string());
+        in_stack.insert(node_id.to_string());
+        path.push(node_id.to_string());
+        
+        // Follow the parent pointer (we traverse parent -> child, so check who has us as parent)
+        for (child_id, parent_id) in parent_map.iter() {
+            if let Some(pid) = parent_id {
+                if pid == node_id {
+                    if !visited.contains(child_id) {
+                        Self::dfs_detect_cycle(
+                            child_id,
+                            parent_map,
+                            visited,
+                            in_stack,
+                            path,
+                            cycles,
+                        );
+                    } else if in_stack.contains(child_id) {
+                        // Found a cycle - extract it from path
+                        if let Some(pos) = path.iter().position(|id| id == child_id) {
+                            let cycle: Vec<String> = path[pos..].iter().cloned().collect();
+                            cycles.push(cycle);
+                        }
+                    }
+                }
+            }
+        }
+        
+        path.pop();
+        in_stack.remove(node_id);
     }
 
     /// Navigate to a specific entry by its ID.
@@ -859,20 +941,35 @@ impl SessionManager {
         }
 
         // ------------------------------------------------------------------
-        // Parse header — attempt repair if structurally valid JSON but missing
+        // Parse header -- attempt repair if structurally valid JSON but missing
         // required fields (e.g. a corrupt or very old header).
         // ------------------------------------------------------------------
-        let header: serde_json::Value = match serde_json::from_str(lines[0]) {
+        let mut header: serde_json::Value = match serde_json::from_str(lines[0]) {
             Ok(v) => v,
             Err(_) => {
-                // Header is not valid JSON at all. Build a minimal header so
-                // the rest of the file can still be migrated.
-                serde_json::json!({
-                    "type": "session",
-                    "version": 0,
-                    "id": Uuid::new_v4().to_string(),
-                    "timestamp": Utc::now(),
-                    "cwd": "."
+                // Try to extract JSON from surrounding text (e.g. "XXX{...}YYY")
+                let repaired = if let Some(start) = lines[0].find('{') {
+                    if let Some(end) = lines[0].rfind('}') {
+                        let json_part = &lines[0][start..=end];
+                        serde_json::from_str(json_part).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // If extraction failed, build a minimal header so the rest of
+                // the file can still be migrated.
+                repaired.unwrap_or_else(|| {
+                    tracing::warn!("Could not repair header, creating minimal header");
+                    serde_json::json!({
+                        "type": "session",
+                        "version": 0,
+                        "id": Uuid::new_v4().to_string(),
+                        "timestamp": Utc::now(),
+                        "cwd": "."
+                    })
                 })
             }
         };
@@ -897,8 +994,7 @@ impl SessionManager {
         // ------------------------------------------------------------------
         let mut migrated_lines = Vec::new();
 
-        let mut new_header = header.clone();
-        if let Some(obj) = new_header.as_object_mut() {
+        if let Some(obj) = header.as_object_mut() {
             obj.insert("version".to_string(), serde_json::json!(3));
             // Ensure type is set
             if !obj.contains_key("type") {
@@ -918,12 +1014,16 @@ impl SessionManager {
                 obj.insert("cwd".to_string(), serde_json::json!("."));
             }
         }
-        migrated_lines.push(serde_json::to_string(&new_header)?);
+        migrated_lines.push(serde_json::to_string(&header)?);
+
+        // Track seen IDs to detect collisions during migration
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut id_remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
         // ------------------------------------------------------------------
         // Migrate entries
         // ------------------------------------------------------------------
-        for line in &lines[1..] {
+        for (line_idx, line) in lines[1..].iter().enumerate() {
             if line.trim().is_empty() {
                 migrated_lines.push(line.to_string());
                 continue;
@@ -931,7 +1031,8 @@ impl SessionManager {
 
             let mut entry: serde_json::Value = match serde_json::from_str(line) {
                 Ok(e) => e,
-                Err(_) => {
+                Err(e) => {
+                    tracing::warn!("Skipping malformed entry at line {}: {}", line_idx + 2, e);
                     // Wrap malformed lines as a comment entry so they survive
                     // the round-trip without silently disappearing.
                     let comment = serde_json::json!({
@@ -939,6 +1040,7 @@ impl SessionManager {
                         "id": Uuid::new_v4().to_string(),
                         "parent_id": null,
                         "timestamp": Utc::now(),
+                        "_malformed": true,
                         "_malformed_original": line.to_string(),
                         "message": {
                             "type": "system_context",
@@ -963,15 +1065,30 @@ impl SessionManager {
 
             // Version-specific migrations.  All manipulations operate on the
             // raw serde_json::Value so unknown fields are preserved as-is.
-            if version < 2 {
-                // v1 -> v2: Ensure all entries have an 'id' field
+            if version < 2 || entry.get("id").is_none() {
+                // v0/v1 -> v2: Ensure all entries have an 'id' field
                 if let Some(obj) = entry.as_object_mut() {
-                    if !obj.contains_key("id") {
+                    let old_id = obj.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                    // Check for ID collision
+                    if let Some(ref id) = old_id {
+                        if seen_ids.contains(id) {
+                            // Generate new ID and track remap
+                            let new_id = Uuid::new_v4().to_string();
+                            id_remap.insert(id.clone(), new_id.clone());
+                            obj.insert("id".to_string(), serde_json::json!(new_id));
+                            tracing::debug!("Remapped duplicate ID {} -> {}", id, new_id);
+                        } else {
+                            seen_ids.insert(id.clone());
+                        }
+                    } else {
+                        // No ID - generate one
                         obj.insert(
                             "id".to_string(),
                             serde_json::json!(Uuid::new_v4().to_string()),
                         );
                     }
+                    
                     // Ensure 'type' field exists
                     if !obj.contains_key("type") {
                         // Infer type from structure or default to message
@@ -983,6 +1100,8 @@ impl SessionManager {
                             "compaction"
                         } else if obj.contains_key("model") {
                             "model_change"
+                        } else if obj.contains_key("branch_entry_id") {
+                            "branch_summary"
                         } else {
                             "message"
                         };
@@ -995,16 +1114,34 @@ impl SessionManager {
                 // v2 -> v3: Add timestamp if missing.
                 //
                 // Try to preserve an existing timestamp-like field before
-                // falling back to Utc::now().
+                // falling back to the header timestamp, then Utc::now().
+                let extracted_ts = if entry.get("timestamp").is_none() {
+                    Self::extract_timestamp_from_entry(&entry)
+                } else {
+                    None
+                };
+
                 if let Some(obj) = entry.as_object_mut() {
                     if !obj.contains_key("timestamp") {
-                        let ts = Self::extract_existing_timestamp(obj)
-                            .unwrap_or_else(|| header_timestamp.clone());
+                        // Priority: extracted from entry fields > header timestamp > now
+                        let ts = if let Some(dt) = extracted_ts {
+                            serde_json::json!(dt)
+                        } else {
+                            Self::extract_existing_timestamp(obj)
+                                .unwrap_or_else(|| header_timestamp.clone())
+                        };
                         obj.insert("timestamp".to_string(), ts);
                     }
                     // Ensure parent_id field exists (can be null)
                     if !obj.contains_key("parent_id") {
                         obj.insert("parent_id".to_string(), serde_json::Value::Null);
+                    }
+                    
+                    // Remap parent_id if it points to a remapped ID
+                    if let Some(parent_id) = obj.get("parent_id").and_then(|v| v.as_str()) {
+                        if let Some(new_id) = id_remap.get(parent_id) {
+                            obj.insert("parent_id".to_string(), serde_json::json!(new_id));
+                        }
                     }
                 }
             }
@@ -1054,6 +1191,31 @@ impl SessionManager {
                 }
             }
         }
+        None
+    }
+
+    /// Attempt to extract timestamp from entry content (operates on the full
+    /// `serde_json::Value` rather than just the object map).
+    fn extract_timestamp_from_entry(entry: &serde_json::Value) -> Option<DateTime<Utc>> {
+        // Try to extract from message timestamp if available
+        if let Some(msg) = entry.get("message") {
+            // Check for nested timestamp in message
+            if let Some(ts) = msg.get("timestamp").and_then(|t| t.as_str()) {
+                if let Ok(parsed) = DateTime::parse_from_rfc3339(ts) {
+                    return Some(parsed.with_timezone(&Utc));
+                }
+            }
+        }
+
+        // Check for created_at or other timestamp fields
+        for field in &["created_at", "date", "time"] {
+            if let Some(ts) = entry.get(field).and_then(|t| t.as_str()) {
+                if let Ok(parsed) = DateTime::parse_from_rfc3339(ts) {
+                    return Some(parsed.with_timezone(&Utc));
+                }
+            }
+        }
+
         None
     }
 
@@ -2313,6 +2475,214 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    #[tokio::test]
+    async fn merge_branched_tree_remaps_all_ids() {
+        let dir = temp_dir("merge-branched");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        // Create target session with branches
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        let t2 = manager.append_message(AgentMessage::from_llm(Message::user("target-2"))).await.expect("t2");
+        
+        // Create a branch from t1
+        manager.branch(&t1);
+        let t3 = manager.append_message(AgentMessage::from_llm(Message::user("target-3-branched"))).await.expect("t3");
+        
+        // Switch back to main line
+        manager.branch(&t2);
+        let t4 = manager.append_message(AgentMessage::from_llm(Message::user("target-4"))).await.expect("t4");
+        
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create source session with its own branches
+        let source_path = dir.join("source.jsonl");
+        let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
+        let s1 = SessionEntry::Message {
+            id: "s1".to_string(),
+            parent_id: None,
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-1")),
+        };
+        let s2 = SessionEntry::Message {
+            id: "s2".to_string(),
+            parent_id: Some("s1".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-2")),
+        };
+        // Branch in source: s3 from s1
+        let s3 = SessionEntry::Message {
+            id: "s3".to_string(),
+            parent_id: Some("s1".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-3-branched")),
+        };
+        // Continue main line s4 from s2
+        let s4 = SessionEntry::Message {
+            id: "s4".to_string(),
+            parent_id: Some("s2".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-4")),
+        };
+        let source_content = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            serde_json::to_string(&source_header).unwrap(),
+            serde_json::to_string(&s1).unwrap(),
+            serde_json::to_string(&s2).unwrap(),
+            serde_json::to_string(&s3).unwrap(),
+            serde_json::to_string(&s4).unwrap()
+        );
+        fs::write(&source_path, source_content).expect("write source");
+        
+        // Merge source into target
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 4, "should merge 4 entries");
+        
+        // Verify tree integrity - no duplicate IDs
+        let tree = manager.get_tree().await.expect("get tree");
+        let mut ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for node in &tree {
+            assert!(
+                ids.insert(&node.entry_id),
+                "Duplicate ID found: {}",
+                node.entry_id
+            );
+        }
+        
+        // Verify parent chains are intact
+        for node in &tree {
+            if let Some(ref parent_id) = node.parent_id {
+                assert!(
+                    ids.contains(parent_id.as_str()),
+                    "Parent ID {} not found for entry {}",
+                    parent_id,
+                    node.entry_id
+                );
+            }
+        }
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn merge_with_id_collisions_remaps_correctly() {
+        let dir = temp_dir("merge-collisions");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        // Create target session
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create source session with IDs that might collide format-wise
+        let source_path = dir.join("source.jsonl");
+        let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
+        
+        // Use IDs that look like UUIDs (similar to what target uses)
+        let colliding_id = "550e8400-e29b-41d4-a716-446655440000";
+        let s1 = SessionEntry::Message {
+            id: colliding_id.to_string(),
+            parent_id: None,
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-1")),
+        };
+        let s2 = SessionEntry::Message {
+            id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string(),
+            parent_id: Some(colliding_id.to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-2")),
+        };
+        let source_content = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&source_header).unwrap(),
+            serde_json::to_string(&s1).unwrap(),
+            serde_json::to_string(&s2).unwrap()
+        );
+        fs::write(&source_path, source_content).expect("write source");
+        
+        // Merge source into target
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 2, "should merge 2 entries");
+        
+        // Verify no ID collisions in the merged session
+        let tree = manager.get_tree().await.expect("get tree");
+        let mut ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for node in &tree {
+            assert!(
+                ids.insert(&node.entry_id),
+                "Duplicate ID after merge: {}",
+                node.entry_id
+            );
+        }
+        
+        // Verify the original collision IDs are NOT present (they should be remapped)
+        assert!(
+            !ids.contains(colliding_id),
+            "Colliding ID should have been remapped"
+        );
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn merge_forked_session_preserves_fork_structure() {
+        let dir = temp_dir("merge-forked");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        // Create target session
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create forked source: fork from an entry, then add to both
+        let mut source_manager = SessionManager::new(dir.join("source"));
+        source_manager.create_session("/tmp/source").await.expect("source session created");
+        let s1 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-1"))).await.expect("s1");
+        let _s2 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-2"))).await.expect("s2");
+        
+        // Fork from s1 and add entry to the fork
+        source_manager.branch(&s1);
+        let _s3 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-3-fork"))).await.expect("s3");
+        
+        let source_path = source_manager.session_path().unwrap().to_path_buf();
+        
+        // Merge forked source into target
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 3, "should merge 3 entries");
+        
+        // Verify tree structure is preserved
+        let tree = manager.get_tree().await.expect("get tree");
+        
+        // Find entries that have the fork structure
+        let mut found_branched = false;
+        for node in &tree {
+            // Look for entries that have parent pointing to earlier entry (not the last one)
+            if let Some(ref parent_id) = node.parent_id {
+                // Check if this entry is a "branched" entry (parent is not the chronologically previous)
+                if node.summary.contains("fork") || node.summary.contains("branched") {
+                    found_branched = true;
+                    // Verify parent exists
+                    assert!(
+                        tree.iter().any(|n| n.entry_id == *parent_id),
+                        "Branched entry's parent should exist"
+                    );
+                }
+            }
+        }
+        
+        // The fork structure should be preserved (at least one branched entry)
+        assert!(found_branched, "Fork structure should be preserved in merged session");
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // Note: Concurrent merge testing would require multi-threaded test setup
+    // and is better suited as an integration test. The merge function itself
+    // is async and uses file append operations which should be atomic.
+
     // -----------------------------------------------------------------------
     // Schema migration tests
     // -----------------------------------------------------------------------
@@ -2385,11 +2755,12 @@ mod tests {
     // Merge test coverage (#1)
     // -----------------------------------------------------------------------
 
-    /// Merge a source session that contains branch summaries and verify that
-    /// all IDs (including the `branch_entry_id` inside `BranchSummary`) are
-    /// remapped to new UUIDs that don't collide with the target session.
+    /// Merge a source session that contains branch summaries (manually constructed)
+    /// and verify that all IDs (including the `branch_entry_id` inside
+    /// `BranchSummary`) are remapped to new UUIDs that don't collide with the
+    /// target session.
     #[tokio::test]
-    async fn merge_branched_tree_remaps_all_ids() {
+    async fn merge_branched_tree_remaps_all_ids_manual_construction() {
         let dir = temp_dir("merge-branch-remap");
         fs::create_dir_all(&dir).expect("create temp dir");
         let mut manager = SessionManager::new(dir.clone());
@@ -3089,5 +3460,236 @@ this-is-not-json
         );
         let ts4 = SessionManager::extract_existing_timestamp(&map4);
         assert!(ts4.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional cycle and merge tests from parallel implementation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn navigate_to_handles_valid_tree() {
+        let dir = temp_dir("navigate-valid");
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        // Create session with valid (non-cyclic) tree: a -> b -> c
+        let header = SessionHeader::new("nav-test".to_string(), "/tmp".to_string());
+        let a = SessionEntry::Message {
+            id: "a".to_string(),
+            parent_id: None,
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("Root A")),
+        };
+        let b = SessionEntry::Message {
+            id: "b".to_string(),
+            parent_id: Some("a".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("Child B")),
+        };
+        let c = SessionEntry::Message {
+            id: "c".to_string(),
+            parent_id: Some("b".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("Child C")),
+        };
+
+        let path = dir.join("valid.jsonl");
+        let content = format!(
+            "{}\n{}\n{}\n{}\n",
+            serde_json::to_string(&header).unwrap(),
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap(),
+            serde_json::to_string(&c).unwrap()
+        );
+        fs::write(&path, content).expect("write session");
+
+        let mut manager = SessionManager::new(dir.clone());
+        manager.load_session(&path).await.expect("load session");
+
+        // Navigate should work on valid tree
+        let messages = manager.navigate_to("c").await.expect("navigate to c");
+        assert_eq!(messages.len(), 3, "Should have 3 messages in path");
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn merge_preserves_valid_parent_chains() {
+        let dir = temp_dir("merge-parent-chains");
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        // Create target session
+        let mut target_manager = SessionManager::new(dir.clone());
+        target_manager.create_session("/tmp/target").await.expect("create target");
+        let _t1 = target_manager.append_message(AgentMessage::from_llm(Message::user("Target 1"))).await.expect("t1");
+
+        // Create source with a simple chain
+        let source_path = dir.join("source.jsonl");
+        let header = SessionHeader::new("source".to_string(), "/tmp".to_string());
+        let s1 = SessionEntry::Message {
+            id: "s1".to_string(),
+            parent_id: None,
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("Source 1")),
+        };
+        let s2 = SessionEntry::Message {
+            id: "s2".to_string(),
+            parent_id: Some("s1".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("Source 2")),
+        };
+        fs::write(&source_path, format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&header).unwrap(),
+            serde_json::to_string(&s1).unwrap(),
+            serde_json::to_string(&s2).unwrap()
+        )).expect("write source");
+
+        // Merge
+        let merged = target_manager.merge(&source_path).await.expect("merge");
+        assert_eq!(merged, 2);
+
+        // Verify tree is still valid
+        let tree = target_manager.get_tree().await.expect("get tree");
+        let all_ids: std::collections::HashSet<_> = tree.iter().map(|n| &n.entry_id).collect();
+
+        // No duplicates after merge
+        assert_eq!(all_ids.len(), tree.len());
+
+        // Valid parent chains
+        for node in &tree {
+            if let Some(ref parent_id) = node.parent_id {
+                assert!(all_ids.contains(parent_id));
+            }
+        }
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn get_tree_handles_orphan_parent() {
+        let dir = temp_dir("orphan-parent");
+        fs::create_dir_all(&dir).expect("create temp dir");
+
+        // Create session with entry pointing to non-existent parent
+        let header = SessionHeader::new("orphan".to_string(), "/tmp".to_string());
+        let orphan = SessionEntry::Message {
+            id: "orphan".to_string(),
+            parent_id: Some("nonexistent".to_string()), // Parent doesn't exist
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("Orphan entry")),
+        };
+
+        let path = dir.join("orphan.jsonl");
+        let content = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&header).unwrap(),
+            serde_json::to_string(&orphan).unwrap()
+        );
+        fs::write(&path, content).expect("write session");
+
+        let mut manager = SessionManager::new(dir.clone());
+        manager.load_session(&path).await.expect("load session");
+
+        // get_tree should handle orphan entries
+        let tree = manager.get_tree().await.expect("get tree");
+        assert_eq!(tree.len(), 1);
+
+        // The orphan entry should have no children
+        assert!(tree[0].children.is_empty());
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn migrate_session_handles_id_collisions_remap() {
+        let dir = temp_dir("migrate-collision-remap");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("collision.jsonl");
+
+        // Create a v1 session with duplicate IDs
+        let v1_header = r#"{"type":"session","version":1,"id":"test","cwd":"/tmp"}"#;
+        let entry1 = r#"{"type":"message","id":"dup","message":{"role":"user","content":"first"}}"#;
+        let entry2 = r#"{"type":"message","id":"dup","message":{"role":"user","content":"second"}}"#;
+        fs::write(&path, format!("{}\n{}\n{}\n", v1_header, entry1, entry2)).expect("write session");
+
+        // Migrate
+        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        assert!(migrated, "should have performed migration");
+
+        // Verify no duplicate IDs in migrated file
+        let content = fs::read_to_string(&path).expect("read migrated");
+        let lines: Vec<&str> = content.lines().collect();
+        let mut ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for (i, line) in lines.iter().enumerate().skip(1) {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(id) = entry.get("id").and_then(|v| v.as_str()) {
+                    assert!(
+                        ids.insert(id.to_string()),
+                        "Duplicate ID found at line {}: {}",
+                        i + 1,
+                        id
+                    );
+                }
+            }
+        }
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn migrate_session_handles_header_corruption_with_embedded_json() {
+        let dir = temp_dir("migrate-corrupt-embedded");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("corrupt-session.jsonl");
+
+        // Create a session with corrupted header (extra text before/after JSON)
+        let corrupt_header = r#"XXX{"type":"session","version":1,"id":"test","cwd":"/tmp","timestamp":"2024-01-01T00:00:00Z"}YYY"#;
+        let entry = r#"{"type":"message","id":"m1","message":{"role":"user","content":"hello"}}"#;
+        fs::write(&path, format!("{}\n{}\n", corrupt_header, entry)).expect("write corrupt session");
+
+        // Migrate should repair and succeed
+        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        assert!(migrated, "should have performed migration after repair");
+
+        // Verify the file is now valid
+        let content = fs::read_to_string(&path).expect("read migrated");
+        let lines: Vec<&str> = content.lines().collect();
+        let header: serde_json::Value = serde_json::from_str(lines[0]).expect("parse repaired header");
+        assert_eq!(header.get("version").unwrap().as_u64(), Some(3));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn migrate_session_marks_malformed_entries_with_flag() {
+        let dir = temp_dir("migrate-malformed-flag");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("malformed-session.jsonl");
+
+        // Create a session with a malformed entry
+        let header = r#"{"type":"session","version":2,"id":"test","cwd":"/tmp"}"#;
+        let valid_entry = r#"{"type":"message","id":"m1","parent_id":null,"timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"valid"}}"#;
+        let malformed_entry = r#"{this is not valid json"#;
+        fs::write(&path, format!("{}\n{}\n{}\n", header, valid_entry, malformed_entry)).expect("write session");
+
+        // Migrate
+        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        assert!(migrated, "should have performed migration");
+
+        // Verify malformed entry is marked
+        let content = fs::read_to_string(&path).expect("read migrated");
+        let lines: Vec<&str> = content.lines().collect();
+        let malformed_parsed: serde_json::Value = serde_json::from_str(lines[2]).expect("parse marked entry");
+        assert!(
+            malformed_parsed.get("_malformed").is_some(),
+            "Malformed entry should be marked with _malformed flag"
+        );
+        assert!(
+            malformed_parsed.get("_malformed_original").is_some(),
+            "Malformed entry should preserve original content"
+        );
+
+        fs::remove_dir_all(dir).ok();
     }
 }

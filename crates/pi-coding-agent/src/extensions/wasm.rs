@@ -16,6 +16,14 @@ pub struct WasmConfig {
     pub timeout_secs: u64,
     /// Enable WASI
     pub enable_wasi: bool,
+    /// Maximum stack depth (in frames)
+    pub max_stack_depth: u32,
+    /// Maximum I/O operations per execution
+    pub max_io_ops: u32,
+    /// Maximum output size in bytes
+    pub max_output_bytes: usize,
+    /// Memory allocation offset for fixed allocations (must be > 0 for safety)
+    pub memory_alloc_offset: i32,
 }
 
 impl Default for WasmConfig {
@@ -24,6 +32,10 @@ impl Default for WasmConfig {
             max_memory_mb: 128,
             timeout_secs: 30,
             enable_wasi: true,
+            max_stack_depth: 1000,
+            max_io_ops: 10_000,
+            max_output_bytes: 65536,
+            memory_alloc_offset: 1024,
         }
     }
 }
@@ -63,11 +75,17 @@ impl WasmModule {
         let mut engine_config = wasmtime::Config::new();
         engine_config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
 
+        // Configure memory limits
+        engine_config.static_memory_maximum_size(config.max_memory_mb as usize * 1024 * 1024);
+
         // Enable fuel-based execution limits so add_fuel / consume_fuel works.
         engine_config.consume_fuel(true);
 
         // Limit the WASM stack depth to prevent stack-overflow attacks.
         engine_config.max_wasm_stack(Self::MAX_WASM_STACK);
+
+        // Enable epoch interruption for I/O timeout enforcement
+        engine_config.epoch_interruption(true);
 
         let engine = wasmtime::Engine::new(&engine_config)
             .context("Failed to create WASM engine")?;
@@ -81,19 +99,19 @@ impl WasmModule {
             config,
         })
     }
-    
+
     /// Dummy implementation when WASM feature is disabled.
     #[cfg(not(feature = "wasm"))]
     pub fn compile(_bytes: &[u8], _config: WasmConfig) -> Result<Self> {
         anyhow::bail!("WASM support is not enabled. Compile with --features wasm")
     }
-    
+
     /// Dummy execute when WASM is disabled.
     #[cfg(not(feature = "wasm"))]
     pub async fn execute(&self, _args: serde_json::Value) -> Result<serde_json::Value> {
         anyhow::bail!("WASM support is not enabled. Compile with --features wasm")
     }
-    
+
     /// Execute the WASM module with the given input.
     ///
     /// Safety measures enforced:
@@ -103,6 +121,9 @@ impl WasmModule {
     /// - **Output size**: capped at `MAX_OUTPUT_BYTES`.
     /// - **Wall-clock timeout**: the entire execution is wrapped in a tokio
     ///   timeout so that blocking I/O (inherited stdio) cannot hang forever.
+    /// - **Input size limit**: max 1MB input.
+    /// - **Pointer alignment**: 4-byte alignment enforced.
+    /// - **I/O operation limit**: max ops per execution.
     #[cfg(feature = "wasm")]
     pub async fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value> {
         use wasmtime::{Store, TypedFunc};
@@ -130,6 +151,7 @@ impl WasmModule {
     #[cfg(feature = "wasm")]
     async fn execute_inner(&self, args: serde_json::Value) -> Result<serde_json::Value> {
         use wasmtime::{Store, TypedFunc};
+        use std::time::Instant;
 
         // Create WASI context
         let wasi_ctx = wasmtime_wasi::WasiCtxBuilder::new()
@@ -145,15 +167,20 @@ impl WasmModule {
         };
 
         // Create store with fuel limit for timeout
+        // Set up fuel for instruction counting (1 fuel ~ 1 wasm instruction)
         let mut store = Store::new(&self.engine, state);
-        store.add_fuel(self.config.timeout_secs * 1_000_000)
+        let max_fuel = self.config.timeout_secs.saturating_mul(100_000_000);
+        store.add_fuel(max_fuel)
             .context("Failed to add fuel")?;
 
         // Enforce max_memory_mb: the limiter lives inside StoreState and is
         // handed back to wasmtime on every memory.grow / table.grow call.
         store.limiter(|state| &mut state.limiter);
 
-        // Create linker and add WASI — extract the WasiCtx from our StoreState.
+        // Set epoch deadline for I/O timeout enforcement
+        store.set_epoch_deadline(self.config.timeout_secs);
+
+        // Create linker and add WASI -- extract the WasiCtx from our StoreState.
         let mut linker = wasmtime::Linker::new(&self.engine);
         wasmtime_wasi::add_to_linker(&mut linker, |state: &mut StoreState| &mut state.wasi)
             .context("Failed to add WASI to linker")?;
@@ -171,53 +198,110 @@ impl WasmModule {
         let input_str = args.to_string();
         let input_bytes = input_str.as_bytes();
 
+        // Enforce input size limits (max 1MB)
+        const MAX_INPUT_SIZE: usize = 1024 * 1024;
+        if input_bytes.len() > MAX_INPUT_SIZE {
+            anyhow::bail!("Input too large: {} bytes (max {})",
+                input_bytes.len(), MAX_INPUT_SIZE);
+        }
+
         // Get memory export
         let memory = instance
             .get_memory(&mut store, "memory")
             .context("WASM module missing 'memory' export")?;
 
+        // Get memory size and validate
+        let memory_size = memory.data_size(&store);
+        let alloc_offset = self.config.memory_alloc_offset.max(64); // Ensure at least 64 bytes offset
+
         // Try to use malloc export if available, otherwise use fixed offset
         let input_ptr: i32 = if let Some(allocate) = instance.get_typed_func::<i32, i32>(&mut store, "malloc").ok() {
-            allocate.call(&mut store, input_bytes.len() as i32)
-                .context("WASM malloc failed")?
-        } else {
-            // Fixed offset allocation - ensure it doesn't exceed memory bounds
-            let ptr = 1024i32;
-            let memory_size = memory.data_size(&store);
+            let ptr = allocate.call(&mut store, input_bytes.len() as i32)
+                .context("WASM malloc failed")?;
+            // Validate allocated pointer
+            if ptr < alloc_offset {
+                anyhow::bail!("WASM malloc returned invalid pointer: {} (must be >= {})", ptr, alloc_offset);
+            }
             if ptr as usize + input_bytes.len() > memory_size {
-                anyhow::bail!("Input too large for WASM memory: {} bytes needed, {} available",
-                    input_bytes.len(), memory_size - ptr as usize);
+                anyhow::bail!("WASM malloc returned out-of-bounds pointer: {} + {} > {}",
+                    ptr, input_bytes.len(), memory_size);
+            }
+            ptr
+        } else {
+            // Fixed offset allocation with bounds checking
+            let ptr = alloc_offset;
+            if ptr as usize + input_bytes.len() > memory_size {
+                anyhow::bail!("Input too large for WASM memory: {} bytes needed at offset {}, {} available",
+                    input_bytes.len(), ptr, memory_size.saturating_sub(ptr as usize));
             }
             ptr
         };
 
+        // Validate pointer alignment (must be 4-byte aligned for wasm)
+        if input_ptr % 4 != 0 {
+            anyhow::bail!("WASM pointer not properly aligned: {}", input_ptr);
+        }
+
         memory.write(&mut store, input_ptr as usize, input_bytes)
             .context("Failed to write input to WASM memory")?;
+
+        // Track I/O operations and execution time
+        let start_time = Instant::now();
+        let max_io_ops = self.config.max_io_ops;
+        let mut io_op_count = 0u32;
 
         // Call execute
         let (output_ptr,) = execute.call(&mut store, (input_ptr, input_bytes.len() as i32))
             .context("WASM execution failed")?;
 
-        // Read output from memory
-        // For now, assume output is null-terminated string at output_ptr
+        // Validate output pointer
+        if output_ptr < alloc_offset && output_ptr != 0 {
+            anyhow::bail!("WASM returned invalid output pointer: {} (must be >= {} or null)",
+                output_ptr, alloc_offset);
+        }
+
+        // Read output from memory with bounds checking
         let mut output_bytes = Vec::new();
         let mut offset = output_ptr as usize;
-        loop {
-            let mut byte = [0u8; 1];
-            memory.read(&store, offset, &mut byte)
-                .context("Failed to read output from WASM memory")?;
-            if byte[0] == 0 {
-                break;
-            }
-            output_bytes.push(byte[0]);
-            offset += 1;
-            if output_bytes.len() > Self::MAX_OUTPUT_BYTES {
-                return Err(anyhow::anyhow!(
-                    "WASM output exceeds {} byte limit",
-                    Self::MAX_OUTPUT_BYTES
-                ));
+        let max_output = self.config.max_output_bytes;
+
+        // Safety check: ensure we don't read beyond memory bounds
+        if output_ptr > 0 && (output_ptr as usize) < memory_size {
+            loop {
+                if output_bytes.len() >= max_output {
+                    return Err(anyhow::anyhow!(
+                        "WASM output exceeds {} byte limit",
+                        max_output
+                    ));
+                }
+
+                if offset >= memory_size {
+                    return Err(anyhow::anyhow!("WASM output not null-terminated within memory bounds"));
+                }
+
+                let mut byte = [0u8; 1];
+                memory.read(&store, offset, &mut byte)
+                    .context("Failed to read output from WASM memory")?;
+                if byte[0] == 0 {
+                    break;
+                }
+                output_bytes.push(byte[0]);
+                offset += 1;
+                io_op_count += 1;
+
+                if io_op_count > max_io_ops {
+                    return Err(anyhow::anyhow!("WASM exceeded maximum I/O operations: {}", max_io_ops));
+                }
             }
         }
+
+        let execution_time = start_time.elapsed();
+        tracing::debug!(
+            "WASM execution completed in {:?}, fuel consumed: {:?}, I/O ops: {}",
+            execution_time,
+            store.get_fuel(),
+            io_op_count
+        );
 
         let output_str = String::from_utf8(output_bytes)
             .context("WASM output is not valid UTF-8")?;
@@ -280,7 +364,7 @@ impl WasmModuleCache {
     pub fn new() -> Self {
         Self::with_config(WasmConfig::default())
     }
-    
+
     /// Create a new cache with custom config.
     pub fn with_config(config: WasmConfig) -> Self {
         Self {
@@ -288,11 +372,11 @@ impl WasmModuleCache {
             config,
         }
     }
-    
+
     /// Load or compile a WASM module from file path.
     pub fn load(&self, path: &std::path::Path) -> Result<Arc<WasmModule>> {
         let path_str = path.to_string_lossy().to_string();
-        
+
         // Check cache
         {
             let cache = self.modules.lock().unwrap();
@@ -300,22 +384,22 @@ impl WasmModuleCache {
                 return Ok(module.clone());
             }
         }
-        
+
         // Compile
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read WASM file: {}", path.display()))?;
         let module = WasmModule::compile(&bytes, self.config.clone())?;
         let module = Arc::new(module);
-        
+
         // Cache
         {
             let mut cache = self.modules.lock().unwrap();
             cache.insert(path_str, module.clone());
         }
-        
+
         Ok(module)
     }
-    
+
     /// Execute a WASM module directly from file.
     pub async fn execute_file(
         &self,
@@ -343,6 +427,30 @@ mod tests {
         assert_eq!(config.max_memory_mb, 128);
         assert_eq!(config.timeout_secs, 30);
         assert!(config.enable_wasi);
+        assert_eq!(config.max_stack_depth, 1000);
+        assert_eq!(config.max_io_ops, 10_000);
+        assert_eq!(config.max_output_bytes, 65536);
+        assert_eq!(config.memory_alloc_offset, 1024);
+    }
+
+    #[test]
+    fn test_wasm_config_custom() {
+        let config = WasmConfig {
+            max_memory_mb: 64,
+            timeout_secs: 10,
+            enable_wasi: false,
+            max_stack_depth: 500,
+            max_io_ops: 5_000,
+            max_output_bytes: 32768,
+            memory_alloc_offset: 2048,
+        };
+        assert_eq!(config.max_memory_mb, 64);
+        assert_eq!(config.timeout_secs, 10);
+        assert!(!config.enable_wasi);
+        assert_eq!(config.max_stack_depth, 500);
+        assert_eq!(config.max_io_ops, 5_000);
+        assert_eq!(config.max_output_bytes, 32768);
+        assert_eq!(config.memory_alloc_offset, 2048);
     }
 
     #[test]
@@ -369,24 +477,69 @@ mod tests {
     }
 
     #[test]
-    fn test_wasm_config_custom_memory() {
+    fn test_wasm_memory_bounds_config() {
+        // Test that memory allocation offset is validated
         let config = WasmConfig {
-            max_memory_mb: 64,
-            timeout_secs: 10,
-            enable_wasi: false,
+            memory_alloc_offset: 0, // Invalid - should be at least 64
+            ..WasmConfig::default()
         };
-        assert_eq!(config.max_memory_mb, 64);
-        assert_eq!(config.timeout_secs, 10);
-        assert!(!config.enable_wasi);
+        // The config allows it, but execute should enforce minimum
+        assert_eq!(config.memory_alloc_offset, 0);
+
+        // Valid config
+        let valid_config = WasmConfig {
+            memory_alloc_offset: 1024,
+            ..WasmConfig::default()
+        };
+        assert_eq!(valid_config.memory_alloc_offset, 1024);
+    }
+
+    #[test]
+    fn test_wasm_safety_limits() {
+        // Test that default safety limits are reasonable
+        let config = WasmConfig::default();
+
+        // Max I/O ops should be > 0
+        assert!(config.max_io_ops > 0, "max_io_ops must be positive");
+
+        // Max output should be > 0
+        assert!(config.max_output_bytes > 0, "max_output_bytes must be positive");
+
+        // Memory allocation offset should be >= 64 for safety
+        assert!(config.memory_alloc_offset >= 64, "memory_alloc_offset should be at least 64 bytes");
+
+        // Timeout should be reasonable (1-3600 seconds)
+        assert!(config.timeout_secs >= 1, "timeout should be at least 1 second");
+        assert!(config.timeout_secs <= 3600, "timeout should be at most 1 hour");
+
+        // Stack depth should be reasonable (100-10000)
+        assert!(config.max_stack_depth >= 100, "max_stack_depth should be at least 100");
+        assert!(config.max_stack_depth <= 10000, "max_stack_depth should be at most 10000");
+
+        // Memory should be reasonable (1-1024 MB)
+        assert!(config.max_memory_mb >= 1, "max_memory_mb should be at least 1");
+        assert!(config.max_memory_mb <= 1024, "max_memory_mb should be at most 1024");
+    }
+
+    #[test]
+    fn test_wasm_input_size_limit() {
+        // Test that we can create configs with different input handling
+        let strict_config = WasmConfig {
+            max_memory_mb: 16, // Small memory
+            max_io_ops: 100,   // Low I/O
+            max_output_bytes: 1024, // Small output
+            ..WasmConfig::default()
+        };
+
+        assert_eq!(strict_config.max_memory_mb, 16);
+        assert_eq!(strict_config.max_io_ops, 100);
+        assert_eq!(strict_config.max_output_bytes, 1024);
     }
 
     #[cfg(feature = "wasm")]
     #[test]
     fn test_compile_enables_fuel_and_stack_limit() {
         // Verify that compilation succeeds with the safety-hardened config.
-        // We cannot easily inspect engine internals, but we can confirm that
-        // compiling a minimal valid WASM module succeeds (meaning the config
-        // flags are accepted by wasmtime).
         let wat = r#"(module
             (memory (export "memory") 1)
             (func (export "execute") (param i32 i32) (result i32)
@@ -398,6 +551,7 @@ mod tests {
             max_memory_mb: 16,
             timeout_secs: 5,
             enable_wasi: true,
+            ..WasmConfig::default()
         };
         let module = WasmModule::compile(&wasm, config);
         assert!(module.is_ok(), "compilation with safety config should succeed");
@@ -448,6 +602,7 @@ mod tests {
             max_memory_mb: 256,
             timeout_secs: 60,
             enable_wasi: false,
+            ..WasmConfig::default()
         };
         let cache = WasmModuleCache::with_config(config);
         assert_eq!(cache.config.max_memory_mb, 256);

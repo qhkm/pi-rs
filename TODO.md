@@ -339,10 +339,10 @@ All 6 Critical, 13 Important, and 8 Minor issues from the comprehensive code rev
 | Crate | Tests |
 |-------|-------|
 | pi-ai | 69 |
-| pi-tui | 11 |
+| pi-tui | 78 |
 | pi-agent-core | 23 |
 | pi-coding-agent | 151 |
 | pi-mom | 0 |
 | pi-web-ui | 0 |
 | pi-pods | 0 |
-| **Total** | **265** |
+| **Total** | **332** |

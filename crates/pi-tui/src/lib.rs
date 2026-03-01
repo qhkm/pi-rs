@@ -18,10 +18,12 @@
 //! - [`rendering`] — Differential renderer and synchronized output helpers.
 //! - [`overlay`] — Overlay/popup management system.
 //! - [`keyboard`] — Kitty keyboard protocol parser and configurable keybindings.
+//! - [`image`] — Terminal image rendering (iTerm2 and Kitty graphics protocols).
 
 pub mod app;
 pub mod components;
 pub mod fuzzy;
+pub mod image;
 pub mod keyboard;
 pub mod overlay;
 pub mod rendering;
@@ -63,6 +65,13 @@ pub use slash::{
     complete_command, CommandDef, SlashCommandHandler, CommandResult, SimpleCommandHandler,
     SlashCommand, SlashCommandRegistry,
 };
+
+// Image rendering protocols
+pub use image::{
+    ImageProtocolRenderer, ImageRenderer, TerminalProtocol,
+};
+pub use image::iterm2::{is_iterm2_terminal, Iterm2Renderer};
+pub use image::kitty::{is_kitty_terminal, KittyRenderer};
 
 // App framework
 pub use app::{App, AppContext, AppResult, FocusArea, LayoutApp};

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Terminal UI library with differential rendering"
 
 [dependencies]
+base64 = { workspace = true }
 crossterm = { workspace = true }
 unicode-width = { workspace = true }
 unicode-segmentation = { workspace = true }

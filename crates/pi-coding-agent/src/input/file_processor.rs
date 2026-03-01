@@ -124,7 +124,10 @@ pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
 /// Process a single file reference (quoted or unquoted).
 ///
 /// Dispatches to directory expansion, glob expansion, or single-file processing
-/// based on the reference pattern.
+/// based on the reference pattern:
+/// - `@file.txt` -> single file
+/// - `@dir/` -> all files in directory (non-recursive)
+/// - `@dir/**/*.rs` -> glob pattern expansion
 fn process_file_ref(
     file_ref: &str,
     cwd: &Path,
@@ -154,14 +157,29 @@ fn process_single_file_ref(
 ) -> anyhow::Result<()> {
     let path = resolve_file_path(file_ref, cwd);
 
+    // Check if it's actually a directory
+    if path.is_dir() {
+        return process_directory(&path, "*", cwd, text_parts, images);
+    }
+
     if !path.exists() {
         anyhow::bail!("File not found: {}", file_ref);
     }
 
-    if is_image_file(&path) {
-        match std::fs::read(&path) {
+    process_single_file(&path, file_ref, text_parts, images)
+}
+
+/// Process a single file (file must exist and be readable).
+fn process_single_file(
+    path: &Path,
+    file_ref: &str,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    if is_image_file(path) {
+        match std::fs::read(path) {
             Ok(data) => {
-                let mime = mime_type_for_path(&path);
+                let mime = mime_type_for_path(path);
                 images.push(ImageAttachment {
                     data,
                     mime_type: mime,
@@ -171,7 +189,7 @@ fn process_single_file_ref(
             Err(e) => anyhow::bail!("Error reading image: {}", e),
         }
     } else {
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(path) {
             Ok(content) => {
                 text_parts.push(format!(
                     "<file name=\"{}\">\n{}\n</file>",
@@ -287,6 +305,83 @@ fn process_glob_ref(
         process_single_file_ref(&display_name, cwd, text_parts, images)?;
     }
 
+    Ok(())
+}
+
+/// Process a directory, optionally with a glob pattern.
+fn process_directory(
+    dir_path: &Path,
+    pattern: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    if !dir_path.exists() {
+        anyhow::bail!("Directory not found: {}", dir_path.display());
+    }
+    
+    if !dir_path.is_dir() {
+        anyhow::bail!("Not a directory: {}", dir_path.display());
+    }
+
+    let glob_pattern = format!("{}/{}", dir_path.display(), pattern);
+    process_glob(&glob_pattern, cwd, text_parts, images)
+}
+
+/// Process a glob pattern and expand all matching files.
+fn process_glob(
+    pattern: &str,
+    cwd: &Path,
+    text_parts: &mut Vec<String>,
+    images: &mut Vec<ImageAttachment>,
+) -> anyhow::Result<()> {
+    use glob::glob;
+    
+    let mut found_any = false;
+    let mut errors = Vec::new();
+    
+    // Resolve pattern relative to cwd if it's not absolute
+    let pattern = if Path::new(pattern).is_absolute() {
+        pattern.to_string()
+    } else {
+        format!("{}/{}", cwd.display(), pattern)
+    };
+    
+    // Try to match the pattern
+    match glob(&pattern) {
+        Ok(paths) => {
+            for entry in paths {
+                match entry {
+                    Ok(path) => {
+                        if path.is_file() {
+                            // Get relative path for display
+                            let file_ref = path.to_string_lossy().to_string();
+                            if let Err(e) = process_single_file(&path, &file_ref, text_parts, images) {
+                                errors.push(format!("{}: {}", file_ref, e));
+                            } else {
+                                found_any = true;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("Glob error: {}", e));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            anyhow::bail!("Invalid glob pattern '{}': {}", pattern, e);
+        }
+    }
+    
+    if !found_any {
+        if errors.is_empty() {
+            anyhow::bail!("No files matched pattern: {}", pattern);
+        } else {
+            anyhow::bail!("Failed to process glob pattern '{}': {}", pattern, errors.join(", "));
+        }
+    }
+    
     Ok(())
 }
 
