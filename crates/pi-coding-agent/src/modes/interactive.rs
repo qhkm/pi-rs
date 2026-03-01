@@ -7,6 +7,58 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 use tokio::task::LocalSet;
 
+// Rustyline for tab completion
+use rustyline::completion::Completer;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{Context, Helper};
+
+// ─── Command Completer ────────────────────────────────────────────────────────
+
+struct CommandCompleter;
+
+impl Completer for CommandCompleter {
+    type Candidate = String;
+
+    fn complete(
+        &self,
+        line: &str,
+        _pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
+        let commands = vec![
+            "/skills",
+            "/skill:list",
+            "/skill:clear",
+            "/skill:install ",
+            "/quit",
+            "exit",
+        ];
+
+        // If line starts with '/', suggest matching commands
+        if line.starts_with('/') || line.is_empty() {
+            let matches: Vec<String> = commands
+                .into_iter()
+                .filter(|cmd| cmd.starts_with(line))
+                .map(|s| s.to_string())
+                .collect();
+            if !matches.is_empty() {
+                return Ok((0, matches));
+            }
+        }
+
+        Ok((0, vec![]))
+    }
+}
+
+impl Highlighter for CommandCompleter {}
+impl Hinter for CommandCompleter {
+    type Hint = String;
+}
+impl Validator for CommandCompleter {}
+impl Helper for CommandCompleter {}
+
 /// Run in interactive TUI mode
 pub async fn run_interactive_mode(agent: Arc<Agent>) -> Result<()> {
     println!("pi interactive mode (type 'exit' or '/quit' to quit)");
@@ -29,26 +81,52 @@ async fn repl_loop(agent: Arc<Agent>) -> Result<()> {
         );
     }
 
-    loop {
-        // Step 1: prompt the user for input
-        print!("> ");
-        io::stdout().flush()?;
+    // Channel for sending readline results from blocking thread
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
 
-        // Read a line via spawn_blocking so we don't block the async executor
-        let line = tokio::task::spawn_blocking(|| {
-            let stdin = io::stdin();
-            let mut buf = String::new();
-            match stdin.lock().read_line(&mut buf) {
-                Ok(0) => None, // EOF
-                Ok(_) => Some(buf),
-                Err(_) => None,
+    // Spawn a blocking thread that owns the rustyline editor
+    let readline_handle = tokio::task::spawn_blocking(move || {
+        let mut editor: rustyline::Editor<CommandCompleter, rustyline::history::DefaultHistory> =
+            match rustyline::Editor::new() {
+                Ok(mut ed) => {
+                    ed.set_helper(Some(CommandCompleter));
+                    ed
+                }
+                Err(e) => {
+                    eprintln!("[failed to initialize readline: {}]", e);
+                    return;
+                }
+            };
+
+        loop {
+            match editor.readline("> ") {
+                Ok(line) => {
+                    if tx.blocking_send(Some(line)).is_err() {
+                        break; // Receiver dropped
+                    }
+                }
+                Err(rustyline::error::ReadlineError::Interrupted) => {
+                    println!("^C");
+                    continue;
+                }
+                Err(rustyline::error::ReadlineError::Eof) => {
+                    let _ = tx.blocking_send(None); // Signal EOF
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[readline error: {}]", e);
+                    continue;
+                }
             }
-        })
-        .await?;
+        }
+    });
 
-        let line = match line {
-            None => break, // EOF
-            Some(l) => l,
+    loop {
+        // Wait for input from the readline thread
+        let line = match rx.recv().await {
+            Some(Some(line)) => line,
+            Some(None) => break, // EOF
+            None => break,       // Channel closed
         };
 
         let input = line.trim().to_string();
@@ -115,6 +193,10 @@ async fn repl_loop(agent: Arc<Agent>) -> Result<()> {
         }
         run_prompt_with_events(&agent, Message::user_with_images(blocks)).await?;
     }
+
+    // Clean up the readline thread
+    drop(rx);
+    let _ = readline_handle.await;
 
     Ok(())
 }
