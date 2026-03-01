@@ -80,11 +80,17 @@ pub fn discover_extensions(cwd: &Path) -> Result<Vec<Extension>> {
 pub async fn register_extension_tools(
     agent: &pi_agent_core::Agent,
     extensions: &[Extension],
+    wrapper_registry: Option<Arc<ToolWrapperRegistry>>,
 ) -> usize {
     let mut count = 0usize;
     for extension in extensions {
         for tool in &extension.manifest.tools {
             if let Some(runtime_tool) = RuntimeExtensionTool::new(extension, tool) {
+                let runtime_tool = if let Some(ref registry) = wrapper_registry {
+                    runtime_tool.with_wrapper_registry(registry.clone())
+                } else {
+                    runtime_tool
+                };
                 agent.register_tool(Arc::new(runtime_tool)).await;
                 count += 1;
             }
@@ -216,6 +222,8 @@ struct RuntimeExtensionTool {
     parameters: Value,
     declared_tool_name: String,
     executor: RuntimeExecutor,
+    extension_path: PathBuf,
+    wrapper_registry: Option<Arc<ToolWrapperRegistry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -305,29 +313,19 @@ impl RuntimeExtensionTool {
             parameters,
             declared_tool_name: tool.name.clone(),
             executor,
+            extension_path: extension.path.clone(),
+            wrapper_registry: None,
         })
     }
-}
 
-#[async_trait]
-impl AgentTool for RuntimeExtensionTool {
-    fn name(&self) -> &str {
-        &self.tool_name
+    /// Set the wrapper registry for this tool
+    fn with_wrapper_registry(mut self, registry: Arc<ToolWrapperRegistry>) -> Self {
+        self.wrapper_registry = Some(registry);
+        self
     }
 
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn parameters_schema(&self) -> Value {
-        self.parameters.clone()
-    }
-
-    fn requires_approval(&self) -> bool {
-        true
-    }
-
-    async fn execute(&self, args: Value, ctx: &ToolContext) -> pi_agent_core::Result<ToolResult> {
+    /// Execute the tool without wrapper hooks
+    async fn execute_inner(&self, args: Value, ctx: &ToolContext) -> pi_agent_core::Result<ToolResult> {
         let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
         match &self.executor {
             RuntimeExecutor::Shell { command } => {
@@ -405,7 +403,118 @@ impl AgentTool for RuntimeExtensionTool {
             }
         }
     }
-    
+}
+
+#[async_trait]
+impl AgentTool for RuntimeExtensionTool {
+    fn name(&self) -> &str {
+        &self.tool_name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> Value {
+        self.parameters.clone()
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> pi_agent_core::Result<ToolResult> {
+        let mut current_args = args;
+        
+        // Execute before wrappers
+        if let Some(ref registry) = self.wrapper_registry {
+            let wrappers = registry.get_wrappers(&self.declared_tool_name);
+            for wrapper in wrappers {
+                if wrapper.before_hook.is_some() {
+                    match execute_wrapper_hook(
+                        wrapper,
+                        &self.declared_tool_name,
+                        &current_args,
+                        &self.extension_path,
+                        WrapperHookType::Before,
+                    ).await {
+                        Ok((should_continue, modified_args, modified_result)) => {
+                            // If wrapper returned a result, use it immediately
+                            if let Some(result) = modified_result {
+                                return Ok(result);
+                            }
+                            // Update args if modified
+                            if let Some(new_args) = modified_args {
+                                current_args = new_args;
+                            }
+                            // Check if we should continue
+                            if !should_continue {
+                                return Ok(ToolResult {
+                                    content: "Tool execution cancelled by wrapper".to_string(),
+                                    is_error: false,
+                                    metadata: None,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            return Ok(ToolResult {
+                                content: format!("Wrapper hook error: {e}"),
+                                is_error: true,
+                                metadata: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Clone args for after hooks (before moving into execute_inner)
+        let args_for_after = current_args.clone();
+        
+        // Execute the actual tool
+        let mut result = self.execute_inner(current_args, ctx).await?;
+        
+        // Execute after wrappers
+        if let Some(ref registry) = self.wrapper_registry {
+            let wrappers = registry.get_wrappers(&self.declared_tool_name);
+            for wrapper in wrappers {
+                if wrapper.after_hook.is_some() {
+                    // Create args with result for after hook
+                    let args_with_result = serde_json::json!({
+                        "original_args": args_for_after,
+                        "result": {
+                            "content": result.content,
+                            "is_error": result.is_error,
+                        }
+                    });
+                    
+                    match execute_wrapper_hook(
+                        wrapper,
+                        &self.declared_tool_name,
+                        &args_with_result,
+                        &self.extension_path,
+                        WrapperHookType::After,
+                    ).await {
+                        Ok((_, _, modified_result)) => {
+                            if let Some(new_result) = modified_result {
+                                result = new_result;
+                            }
+                        }
+                        Err(e) => {
+                            return Ok(ToolResult {
+                                content: format!("After wrapper hook error: {e}"),
+                                is_error: true,
+                                metadata: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(result)
+    }
+
     fn clone_boxed(&self) -> Box<dyn AgentTool> {
         Box::new(RuntimeExtensionTool {
             tool_name: self.tool_name.clone(),
@@ -413,6 +522,8 @@ impl AgentTool for RuntimeExtensionTool {
             parameters: self.parameters.clone(),
             declared_tool_name: self.declared_tool_name.clone(),
             executor: self.executor.clone(),
+            extension_path: self.extension_path.clone(),
+            wrapper_registry: self.wrapper_registry.clone(),
         })
     }
 }
@@ -622,6 +733,7 @@ fn slugify(name: &str) -> String {
 use types::ToolWrapperDef;
 
 /// Registry for tool wrappers that can intercept and modify tool execution.
+#[derive(Debug)]
 pub struct ToolWrapperRegistry {
     /// Map from tool name (or "*" for all) to wrapper definitions
     wrappers: HashMap<String, Vec<ToolWrapperDef>>,
@@ -680,6 +792,13 @@ impl Default for ToolWrapperRegistry {
     }
 }
 
+/// Wrapper hook type
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WrapperHookType {
+    Before,
+    After,
+}
+
 /// Execute a wrapper hook script with the given context.
 ///
 /// Returns (should_continue, modified_args, modified_result)
@@ -691,14 +810,16 @@ pub async fn execute_wrapper_hook(
     tool_name: &str,
     args: &Value,
     extension_path: &Path,
+    hook_type: WrapperHookType,
 ) -> anyhow::Result<(bool, Option<Value>, Option<ToolResult>)> {
     use std::process::Stdio;
 
-    let hook_path = wrapper
-        .before_hook
-        .as_ref()
-        .or(wrapper.after_hook.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("No hook script specified"))?;
+    let hook_path = match hook_type {
+        WrapperHookType::Before => wrapper.before_hook.as_ref(),
+        WrapperHookType::After => wrapper.after_hook.as_ref(),
+    }.ok_or_else(|| anyhow::anyhow!("No {} hook script specified", 
+        if hook_type == WrapperHookType::Before { "before" } else { "after" }
+    ))?;
 
     let full_hook_path = extension_path.join(hook_path);
     
@@ -720,7 +841,7 @@ pub async fn execute_wrapper_hook(
     let context = serde_json::json!({
         "tool_name": tool_name,
         "args": args,
-        "wrapper_type": "before",
+        "wrapper_type": if hook_type == WrapperHookType::Before { "before" } else { "after" },
     });
 
     let output = tokio::process::Command::new(&full_hook_path)

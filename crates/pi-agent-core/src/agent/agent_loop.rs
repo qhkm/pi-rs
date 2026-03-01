@@ -22,6 +22,69 @@ use crate::error::{AgentError, Result};
 use crate::messages::{self, AgentMessage};
 use crate::tools::traits::{ToolContext, ToolProgress, ToolResult as AgentToolResult};
 
+/// Hook system for agent lifecycle events
+pub mod hooks {
+    use serde_json::Value;
+    
+    /// Lifecycle events for hook dispatch
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum HookEvent {
+        BeforeTurn,
+        AfterTurn,
+        BeforeCompact,
+        AfterCompact,
+    }
+    
+    /// Context passed to hook handlers
+    pub struct HookContext {
+        pub event: HookEvent,
+        pub data: Value,
+    }
+    
+    /// Result from hook handler
+    pub enum HookResult {
+        Continue,
+        Cancel,
+        Modified(Value),
+    }
+    
+    /// Handler function type
+    pub type HookHandler = Box<dyn Fn(&HookContext) -> HookResult + Send + Sync>;
+    
+    /// Registry for hook handlers
+    pub struct HookRegistry {
+        hooks: std::collections::HashMap<HookEvent, Vec<HookHandler>>,
+    }
+    
+    impl HookRegistry {
+        pub fn new() -> Self {
+            Self {
+                hooks: std::collections::HashMap::new(),
+            }
+        }
+        
+        pub fn register(&mut self, event: HookEvent, handler: HookHandler) {
+            self.hooks.entry(event).or_default().push(handler);
+        }
+        
+        pub fn dispatch(&self, ctx: &HookContext) -> Vec<HookResult> {
+            let mut results = Vec::new();
+            if let Some(handlers) = self.hooks.get(&ctx.event) {
+                for handler in handlers {
+                    results.push(handler(ctx));
+                }
+            }
+            results
+        }
+    }
+    
+    impl Default for HookRegistry {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+}
+
 /// A callable that receives the full LLM-visible message list (already
 /// converted from `AgentMessage`) right before it is sent to the provider and
 /// may mutate it in place.  The list is a *clone* of the stored conversation;
@@ -46,6 +109,8 @@ pub struct Agent {
     context_transforms: Arc<RwLock<Vec<ContextTransformFn>>>,
     /// Event log file handle (if persistence is enabled)
     event_log: Arc<RwLock<Option<std::fs::File>>>,
+    /// Hook registry for lifecycle events
+    hook_registry: std::sync::Arc<tokio::sync::RwLock<hooks::HookRegistry>>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +152,7 @@ impl Agent {
             event_tx,
             context_transforms: Arc::new(RwLock::new(Vec::new())),
             event_log: Arc::new(RwLock::new(event_log)),
+            hook_registry: Arc::new(RwLock::new(hooks::HookRegistry::new())),
         }
     }
 
@@ -127,6 +193,15 @@ impl Agent {
     /// ```
     pub async fn register_context_transform(&self, transform: ContextTransformFn) {
         self.context_transforms.write().await.push(transform);
+    }
+
+    /// Register a hook handler for a lifecycle event.
+    pub async fn register_hook(
+        &self,
+        event: hooks::HookEvent,
+        handler: hooks::HookHandler,
+    ) {
+        self.hook_registry.write().await.register(event, handler);
     }
 
     /// Subscribe to agent events
@@ -342,6 +417,25 @@ impl Agent {
                     }
                 }
 
+                // Dispatch BeforeTurn hooks
+                let before_turn_ctx = hooks::HookContext {
+                    event: hooks::HookEvent::BeforeTurn,
+                    data: serde_json::json!({"turn_index": turn_index}),
+                };
+                let before_turn_results = self.hook_registry.read().await.dispatch(&before_turn_ctx);
+                for result in before_turn_results {
+                    match result {
+                        hooks::HookResult::Cancel => {
+                            tracing::info!("BeforeTurn hook cancelled turn {}", turn_index);
+                            return last_message.ok_or(AgentError::Aborted);
+                        }
+                        hooks::HookResult::Modified(data) => {
+                            tracing::debug!("BeforeTurn hook modified data: {:?}", data);
+                        }
+                        _ => {}
+                    }
+                }
+
                 self.emit(AgentEvent::TurnStart { turn_index });
                 *self.shared.state.write().await = AgentState::Streaming;
 
@@ -395,6 +489,28 @@ impl Agent {
 
                 last_message = Some(assistant_msg.clone());
 
+                // Dispatch AfterTurn hooks
+                let after_turn_ctx = hooks::HookContext {
+                    event: hooks::HookEvent::AfterTurn,
+                    data: serde_json::json!({
+                        "turn_index": turn_index,
+                        "has_tool_calls": has_tool_calls,
+                    }),
+                };
+                let after_turn_results = self.hook_registry.read().await.dispatch(&after_turn_ctx);
+                for result in after_turn_results {
+                    match result {
+                        hooks::HookResult::Cancel => {
+                            tracing::info!("AfterTurn hook cancelled after turn {}", turn_index);
+                            return last_message.ok_or(AgentError::Aborted);
+                        }
+                        hooks::HookResult::Modified(data) => {
+                            tracing::debug!("AfterTurn hook modified data: {:?}", data);
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Auto-compaction check — read the runtime-mutable flag from shared state
                 // rather than the static AgentConfig so that SetAutoCompaction RPC commands
                 // take effect without rebuilding the agent.
@@ -403,16 +519,51 @@ impl Agent {
                     let context_window = self.config.token_budget.context_window;
                     if should_compact(usage.total_tokens, context_window, &self.config.compaction) {
                         self.emit(AgentEvent::AutoCompaction);
-                        match self.run_compaction(None).await {
-                            Ok(result) => {
-                                tracing::info!(
-                                    tokens_before = result.tokens_before,
-                                    tokens_after = result.tokens_after,
-                                    "Auto-compacted context"
-                                );
+                        
+                        // Dispatch BeforeCompact hooks
+                        let before_compact_ctx = hooks::HookContext {
+                            event: hooks::HookEvent::BeforeCompact,
+                            data: serde_json::json!({
+                                "turn_index": turn_index,
+                                "tokens": usage.total_tokens,
+                                "context_window": context_window,
+                            }),
+                        };
+                        let before_compact_results = self.hook_registry.read().await.dispatch(&before_compact_ctx);
+                        let mut should_cancel_compact = false;
+                        for result in before_compact_results {
+                            match result {
+                                hooks::HookResult::Cancel => {
+                                    should_cancel_compact = true;
+                                    break;
+                                }
+                                _ => {}
                             }
-                            Err(e) => {
-                                tracing::warn!("Auto-compaction failed: {e}");
+                        }
+                        
+                        if !should_cancel_compact {
+                            match self.run_compaction(None).await {
+                                Ok(result) => {
+                                    tracing::info!(
+                                        tokens_before = result.tokens_before,
+                                        tokens_after = result.tokens_after,
+                                        "Auto-compacted context"
+                                    );
+                                    
+                                    // Dispatch AfterCompact hooks
+                                    let after_compact_ctx = hooks::HookContext {
+                                        event: hooks::HookEvent::AfterCompact,
+                                        data: serde_json::json!({
+                                            "turn_index": turn_index,
+                                            "tokens_before": result.tokens_before,
+                                            "tokens_after": result.tokens_after,
+                                        }),
+                                    };
+                                    let _ = self.hook_registry.read().await.dispatch(&after_compact_ctx);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Auto-compaction failed: {e}");
+                                }
                             }
                         }
                     }
