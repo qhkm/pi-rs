@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     );
 
     // Resolve provider and model(s)
-    let provider_name = args.provider.as_deref().unwrap_or("anthropic");
+    let provider_name = resolve_provider_name(args.provider.as_deref().unwrap_or("anthropic"));
     let model_ids: Vec<String> = if !args.models.is_empty() {
         args.models.clone()
     } else {
@@ -235,6 +235,20 @@ async fn init_session(args: &Args, cwd: &str, agent: &Agent) -> Result<Option<Se
     }
 
     Ok(Some(manager))
+}
+
+/// Map short provider names to full API identifiers.
+fn resolve_provider_name(name: &str) -> &str {
+    match name {
+        "anthropic" => "anthropic-messages",
+        "openai" => "openai-completions",
+        "google" => "google-generative-ai",
+        "azure" => "azure-open-ai-responses",
+        "bedrock" => "bedrock-converse-stream",
+        "mistral" => "mistral-native",
+        // Already full names or unknown
+        _ => name,
+    }
 }
 
 async fn persist_new_messages(
