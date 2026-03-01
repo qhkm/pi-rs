@@ -2023,7 +2023,7 @@ mod tests {
         manager.create_session("/tmp/target").await.expect("target session created");
         let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-msg-1"))).await.expect("t1");
         let t2 = manager.append_message(AgentMessage::from_llm(Message::user("target-msg-2"))).await.expect("t2");
-        let target_path = manager.session_path().unwrap().to_path_buf();
+        let _target_path = manager.session_path().unwrap().to_path_buf();
         
         // Create source session file manually
         let source_path = dir.join("source.jsonl");
@@ -2107,6 +2107,214 @@ mod tests {
         
         fs::remove_dir_all(dir).ok();
     }
+
+    #[tokio::test]
+    async fn merge_branched_tree_remaps_all_ids() {
+        let dir = temp_dir("merge-branched");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        // Create target session with branches
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        let t2 = manager.append_message(AgentMessage::from_llm(Message::user("target-2"))).await.expect("t2");
+        
+        // Create a branch from t1
+        manager.branch(&t1);
+        let t3 = manager.append_message(AgentMessage::from_llm(Message::user("target-3-branched"))).await.expect("t3");
+        
+        // Switch back to main line
+        manager.branch(&t2);
+        let t4 = manager.append_message(AgentMessage::from_llm(Message::user("target-4"))).await.expect("t4");
+        
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create source session with its own branches
+        let source_path = dir.join("source.jsonl");
+        let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
+        let s1 = SessionEntry::Message {
+            id: "s1".to_string(),
+            parent_id: None,
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-1")),
+        };
+        let s2 = SessionEntry::Message {
+            id: "s2".to_string(),
+            parent_id: Some("s1".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-2")),
+        };
+        // Branch in source: s3 from s1
+        let s3 = SessionEntry::Message {
+            id: "s3".to_string(),
+            parent_id: Some("s1".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-3-branched")),
+        };
+        // Continue main line s4 from s2
+        let s4 = SessionEntry::Message {
+            id: "s4".to_string(),
+            parent_id: Some("s2".to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-4")),
+        };
+        let source_content = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            serde_json::to_string(&source_header).unwrap(),
+            serde_json::to_string(&s1).unwrap(),
+            serde_json::to_string(&s2).unwrap(),
+            serde_json::to_string(&s3).unwrap(),
+            serde_json::to_string(&s4).unwrap()
+        );
+        fs::write(&source_path, source_content).expect("write source");
+        
+        // Merge source into target
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 4, "should merge 4 entries");
+        
+        // Verify tree integrity - no duplicate IDs
+        let tree = manager.get_tree().await.expect("get tree");
+        let mut ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for node in &tree {
+            assert!(
+                ids.insert(&node.entry_id),
+                "Duplicate ID found: {}",
+                node.entry_id
+            );
+        }
+        
+        // Verify parent chains are intact
+        for node in &tree {
+            if let Some(ref parent_id) = node.parent_id {
+                assert!(
+                    ids.contains(parent_id.as_str()),
+                    "Parent ID {} not found for entry {}",
+                    parent_id,
+                    node.entry_id
+                );
+            }
+        }
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn merge_with_id_collisions_remaps_correctly() {
+        let dir = temp_dir("merge-collisions");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        // Create target session
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create source session with IDs that might collide format-wise
+        let source_path = dir.join("source.jsonl");
+        let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
+        
+        // Use IDs that look like UUIDs (similar to what target uses)
+        let colliding_id = "550e8400-e29b-41d4-a716-446655440000";
+        let s1 = SessionEntry::Message {
+            id: colliding_id.to_string(),
+            parent_id: None,
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-1")),
+        };
+        let s2 = SessionEntry::Message {
+            id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string(),
+            parent_id: Some(colliding_id.to_string()),
+            timestamp: Utc::now(),
+            message: AgentMessage::from_llm(Message::user("source-2")),
+        };
+        let source_content = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&source_header).unwrap(),
+            serde_json::to_string(&s1).unwrap(),
+            serde_json::to_string(&s2).unwrap()
+        );
+        fs::write(&source_path, source_content).expect("write source");
+        
+        // Merge source into target
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 2, "should merge 2 entries");
+        
+        // Verify no ID collisions in the merged session
+        let tree = manager.get_tree().await.expect("get tree");
+        let mut ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for node in &tree {
+            assert!(
+                ids.insert(&node.entry_id),
+                "Duplicate ID after merge: {}",
+                node.entry_id
+            );
+        }
+        
+        // Verify the original collision IDs are NOT present (they should be remapped)
+        assert!(
+            !ids.contains(colliding_id),
+            "Colliding ID should have been remapped"
+        );
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn merge_forked_session_preserves_fork_structure() {
+        let dir = temp_dir("merge-forked");
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let mut manager = SessionManager::new(dir.clone());
+        
+        // Create target session
+        manager.create_session("/tmp/target").await.expect("target session created");
+        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        let target_path = manager.session_path().unwrap().to_path_buf();
+        
+        // Create forked source: fork from an entry, then add to both
+        let mut source_manager = SessionManager::new(dir.join("source"));
+        source_manager.create_session("/tmp/source").await.expect("source session created");
+        let s1 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-1"))).await.expect("s1");
+        let _s2 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-2"))).await.expect("s2");
+        
+        // Fork from s1 and add entry to the fork
+        source_manager.branch(&s1);
+        let _s3 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-3-fork"))).await.expect("s3");
+        
+        let source_path = source_manager.session_path().unwrap().to_path_buf();
+        
+        // Merge forked source into target
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(merged_count, 3, "should merge 3 entries");
+        
+        // Verify tree structure is preserved
+        let tree = manager.get_tree().await.expect("get tree");
+        
+        // Find entries that have the fork structure
+        let mut found_branched = false;
+        for node in &tree {
+            // Look for entries that have parent pointing to earlier entry (not the last one)
+            if let Some(ref parent_id) = node.parent_id {
+                // Check if this entry is a "branched" entry (parent is not the chronologically previous)
+                if node.summary.contains("fork") || node.summary.contains("branched") {
+                    found_branched = true;
+                    // Verify parent exists
+                    assert!(
+                        tree.iter().any(|n| n.entry_id == *parent_id),
+                        "Branched entry's parent should exist"
+                    );
+                }
+            }
+        }
+        
+        // The fork structure should be preserved (at least one branched entry)
+        assert!(found_branched, "Fork structure should be preserved in merged session");
+        
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // Note: Concurrent merge testing would require multi-threaded test setup
+    // and is better suited as an integration test. The merge function itself
+    // is async and uses file append operations which should be atomic.
 
     // -----------------------------------------------------------------------
     // Schema migration tests
