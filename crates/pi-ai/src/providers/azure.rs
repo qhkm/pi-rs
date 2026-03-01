@@ -68,8 +68,12 @@ impl AzureOpenAIProvider {
         let deployment = std::env::var("AZURE_OPENAI_DEPLOYMENT").ok()?;
         let api_version = std::env::var("AZURE_OPENAI_API_VERSION").ok();
 
-        let base_url = format!("{}/openai/deployments/{}", endpoint.trim_end_matches('/'), deployment);
-        
+        let base_url = format!(
+            "{}/openai/deployments/{}",
+            endpoint.trim_end_matches('/'),
+            deployment
+        );
+
         Some(Self::new(api_key, base_url, api_version.as_deref()))
     }
 
@@ -117,7 +121,13 @@ fn build_azure_messages(messages: &[Message]) -> Value {
                     .content
                     .iter()
                     .filter_map(|c| {
-                        if let Content::ToolCall { id, name, arguments, .. } = c {
+                        if let Content::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                            ..
+                        } = c
+                        {
                             Some(json!({
                                 "id": id,
                                 "type": "function",
@@ -612,10 +622,7 @@ mod tests {
             mime_type: "image/jpeg".to_string(),
         };
         let msg = Message::User(crate::messages::types::UserMessage {
-            content: UserContent::Blocks(vec![
-                Content::text("What is in this picture?"),
-                image,
-            ]),
+            content: UserContent::Blocks(vec![Content::text("What is in this picture?"), image]),
             timestamp: Utc::now().timestamp_millis(),
         });
 

@@ -31,10 +31,10 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use tokio::sync::broadcast;
 
-use pi_agent_core::{Agent, AgentConfig, AgentEvent, AgentState};
 use pi_agent_core::context::budget::TokenBudget;
 use pi_agent_core::context::compaction::CompactionSettings;
 use pi_agent_core::messages::AgentMessage;
+use pi_agent_core::{Agent, AgentConfig, AgentEvent, AgentState};
 use pi_ai::ThinkingLevel;
 
 use crate::tools::operations::LocalFileOps;
@@ -140,9 +140,7 @@ impl AgentSession {
         // Build system prompt (load context files from cwd).
         let cwd_path = std::path::Path::new(&options.cwd);
         let loaded_context = crate::context::resource_loader::load_context(cwd_path)
-            .with_context(|| {
-                format!("Failed to load context files from '{}'", options.cwd)
-            })?;
+            .with_context(|| format!("Failed to load context files from '{}'", options.cwd))?;
 
         const DEFAULT_PROMPT: &str =
             "You are a helpful AI coding assistant. You have access to tools \
@@ -243,10 +241,7 @@ impl AgentSession {
     ///
     /// Useful for multimodal inputs where the caller needs to attach image
     /// content blocks alongside text.
-    pub async fn send_message_raw(
-        &self,
-        message: pi_ai::Message,
-    ) -> Result<(), anyhow::Error> {
+    pub async fn send_message_raw(&self, message: pi_ai::Message) -> Result<(), anyhow::Error> {
         self.agent
             .prompt_message(message)
             .await
@@ -332,10 +327,8 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::mpsc;
 
-    use pi_ai::{
-        Context, LLMProvider, Model, ProviderCapabilities, StreamEvent, StreamOptions,
-    };
     use pi_ai::models::registry::built_in_models;
+    use pi_ai::{Context, LLMProvider, Model, ProviderCapabilities, StreamEvent, StreamOptions};
 
     // ------------------------------------------------------------------
     // Minimal no-op provider / model helpers
@@ -402,11 +395,7 @@ mod tests {
             max_turns: 10,
         });
 
-        assert!(
-            result.is_ok(),
-            "Expected Ok but got: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Expected Ok but got: {:?}", result.err());
     }
 
     // ------------------------------------------------------------------

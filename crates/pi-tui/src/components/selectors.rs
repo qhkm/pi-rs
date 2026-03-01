@@ -23,7 +23,11 @@ pub struct ModelInfo {
 
 impl ModelInfo {
     /// Create a new model info.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, provider: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        provider: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -62,19 +66,19 @@ impl ModelInfo {
     /// Format description with details.
     pub fn display_description(&self) -> String {
         let mut parts = Vec::new();
-        
+
         if let Some(window) = self.context_window {
             parts.push(format!("{}K context", window / 1000));
         }
-        
+
         if let (Some(input), Some(output)) = (self.input_cost, self.output_cost) {
             parts.push(format!("${:.2}/${:.2}", input, output));
         }
-        
+
         if !self.capabilities.is_empty() {
             parts.push(self.capabilities.join(", "));
         }
-        
+
         parts.join(" • ")
     }
 }
@@ -222,7 +226,11 @@ pub struct ThinkingLevel {
 
 impl ThinkingLevel {
     /// Create a new thinking level.
-    pub fn new(id: impl Into<String>, name: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -258,8 +266,7 @@ impl ThinkingSelector {
     /// Create a new thinking selector with default levels.
     pub fn new() -> Self {
         let levels = vec![
-            ThinkingLevel::new("none", "None", "No extended thinking")
-                .with_color("gray"),
+            ThinkingLevel::new("none", "None", "No extended thinking").with_color("gray"),
             ThinkingLevel::new("low", "Low", "Minimal reasoning effort")
                 .with_budget(1024)
                 .with_color("green"),
@@ -372,31 +379,31 @@ impl Default for ThinkingSelector {
 impl Component for ThinkingSelector {
     fn render(&self, width: u16) -> Vec<String> {
         let mut lines = self.select_list.render(width);
-        
+
         // Add header
         if !lines.is_empty() {
             let header = format!("\x1b[1mThinking Level\x1b[0m (Shift+Tab to cycle)");
             lines.insert(0, header);
         }
-        
+
         lines
     }
 
     fn handle_input(&mut self, data: &str) -> InputResult {
         let kb = crate::keyboard::keybindings::KeybindingsManager::new();
-        
+
         // Handle Shift+Tab to cycle
         if data == "\x1b[Z" {
             self.prev_level();
             return InputResult::Consumed;
         }
-        
+
         // Handle Tab to cycle forward
         if kb.matches(data, EditorAction::Tab) {
             self.next_level();
             return InputResult::Consumed;
         }
-        
+
         self.select_list.handle_input(data)
     }
 
@@ -522,11 +529,11 @@ impl SessionSelector {
 impl Component for SessionSelector {
     fn render(&self, width: u16) -> Vec<String> {
         let mut lines = self.select_list.render(width);
-        
+
         if !lines.is_empty() {
             lines.insert(0, "\x1b[1mSelect Session\x1b[0m".to_string());
         }
-        
+
         lines
     }
 
@@ -574,7 +581,9 @@ impl QuickActionSelector {
 
         let items: Vec<SelectItem> = actions
             .into_iter()
-            .map(|(cmd, desc)| SelectItem::new(cmd.to_string(), cmd.to_string()).with_description(desc.to_string()))
+            .map(|(cmd, desc)| {
+                SelectItem::new(cmd.to_string(), cmd.to_string()).with_description(desc.to_string())
+            })
             .collect();
 
         Self {
@@ -592,11 +601,11 @@ impl Default for QuickActionSelector {
 impl Component for QuickActionSelector {
     fn render(&self, width: u16) -> Vec<String> {
         let mut lines = self.select_list.render(width);
-        
+
         if !lines.is_empty() {
             lines.insert(0, "\x1b[1mCommands\x1b[0m".to_string());
         }
-        
+
         lines
     }
 

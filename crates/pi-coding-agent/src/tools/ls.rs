@@ -84,7 +84,7 @@ impl AgentTool for LsTool {
             Ok(ToolResult::success(entries.join("\n")))
         }
     }
-    
+
     fn clone_boxed(&self) -> Box<dyn AgentTool> {
         Box::new(LsTool)
     }

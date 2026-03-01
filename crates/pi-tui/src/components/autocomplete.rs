@@ -148,7 +148,9 @@ impl Autocomplete {
 
     /// Get the currently selected item.
     pub fn selected_item(&self) -> Option<&str> {
-        self.filtered.get(self.selected_index).map(|m| m.text.as_str())
+        self.filtered
+            .get(self.selected_index)
+            .map(|m| m.text.as_str())
     }
 
     /// Get all filtered matches.
@@ -158,7 +160,7 @@ impl Autocomplete {
 
     fn filter_suggestions(&mut self) {
         let query = self.input.value();
-        
+
         // Check for trigger context
         self.active_trigger = query.chars().next().and_then(|c| {
             if self.triggers.contains(&c) {
@@ -177,7 +179,8 @@ impl Autocomplete {
 
         if search_query.is_empty() && self.active_trigger.is_none() {
             // Show all suggestions when empty (unless triggered)
-            self.filtered = self.suggestions
+            self.filtered = self
+                .suggestions
                 .iter()
                 .map(|s| FuzzyMatch {
                     text: s.clone(),
@@ -222,10 +225,10 @@ impl Autocomplete {
             } else {
                 selected.text.clone()
             };
-            
+
             self.input.set_value(value);
             self.visible = false;
-            
+
             if let Some(ref cb) = self.on_select {
                 cb(&selected.text);
             }
@@ -275,9 +278,7 @@ impl Autocomplete {
             let highlighted = if item.positions.is_empty() {
                 item.text.clone()
             } else {
-                highlight_matches(&item.text, &item.positions, |s| {
-                    (self.theme.highlight)(s)
-                })
+                highlight_matches(&item.text, &item.positions, |s| (self.theme.highlight)(s))
             };
 
             // Apply selection style
@@ -292,7 +293,11 @@ impl Autocomplete {
             let line = if visible_len > w.saturating_sub(2) {
                 truncate_visible(&styled, w.saturating_sub(2))
             } else {
-                format!("{}{}", styled, " ".repeat(w.saturating_sub(2) - visible_len))
+                format!(
+                    "{}{}",
+                    styled,
+                    " ".repeat(w.saturating_sub(2) - visible_len)
+                )
             };
 
             lines.push(format!("│{}│", line));
@@ -314,7 +319,7 @@ impl Default for Autocomplete {
 impl Component for Autocomplete {
     fn render(&self, width: u16) -> Vec<String> {
         let mut lines = self.input.render(width);
-        
+
         if self.visible {
             lines.extend(self.render_dropdown(width));
         }
@@ -327,12 +332,15 @@ impl Component for Autocomplete {
         if self.visible {
             let kb = &self.keybindings;
 
-            if kb.matches(data, EditorAction::SelectUp) || kb.matches(data, EditorAction::CursorUp) {
+            if kb.matches(data, EditorAction::SelectUp) || kb.matches(data, EditorAction::CursorUp)
+            {
                 self.move_up();
                 return InputResult::Consumed;
             }
 
-            if kb.matches(data, EditorAction::SelectDown) || kb.matches(data, EditorAction::CursorDown) {
+            if kb.matches(data, EditorAction::SelectDown)
+                || kb.matches(data, EditorAction::CursorDown)
+            {
                 self.move_down();
                 return InputResult::Consumed;
             }
@@ -350,10 +358,10 @@ impl Component for Autocomplete {
 
         // Pass through to input
         let result = self.input.handle_input(data);
-        
+
         // Update filter after input changes
         self.filter_suggestions();
-        
+
         result
     }
 
@@ -381,10 +389,10 @@ impl Focusable for Autocomplete {
 /// Get visual length of a string (excluding ANSI codes).
 fn strip_ansi_len(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
-    
+
     let mut result = String::new();
     let mut chars = s.chars().peekable();
-    
+
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
             if chars.peek() == Some(&'[') {
@@ -399,7 +407,7 @@ fn strip_ansi_len(s: &str) -> usize {
             result.push(ch);
         }
     }
-    
+
     result.width()
 }
 
@@ -409,7 +417,7 @@ fn truncate_visible(s: &str, max_width: usize) -> String {
     let mut width = 0usize;
     let mut chars = s.chars().peekable();
     let mut in_ansi = false;
-    
+
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
             result.push(ch);
@@ -431,7 +439,7 @@ fn truncate_visible(s: &str, max_width: usize) -> String {
             width += cw;
         }
     }
-    
+
     result
 }
 
@@ -446,11 +454,11 @@ mod tests {
             "file2.txt".to_string(),
             "README.md".to_string(),
         ];
-        
+
         let mut ac = Autocomplete::new(suggestions);
         ac.set_value("fi");
         ac.show();
-        
+
         assert!(ac.is_visible());
         assert!(!ac.filtered.is_empty());
     }
@@ -459,13 +467,13 @@ mod tests {
     fn test_autocomplete_navigation() {
         let suggestions = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let mut ac = Autocomplete::new(suggestions);
-        
+
         ac.show();
         assert_eq!(ac.selected_index, 0);
-        
+
         ac.move_down();
         assert_eq!(ac.selected_index, 1);
-        
+
         ac.move_up();
         assert_eq!(ac.selected_index, 0);
     }
@@ -474,7 +482,7 @@ mod tests {
     fn test_strip_ansi_len() {
         let plain = "Hello";
         assert_eq!(strip_ansi_len(plain), 5);
-        
+
         let styled = "\x1b[31mHello\x1b[0m";
         assert_eq!(strip_ansi_len(styled), 5);
     }

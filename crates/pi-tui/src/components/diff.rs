@@ -175,7 +175,11 @@ impl Diff {
                     // Context line
                     hunk.lines.push(DiffLine {
                         kind: DiffLineKind::Context,
-                        content: if line.is_empty() { String::new() } else { line[1..].to_string() },
+                        content: if line.is_empty() {
+                            String::new()
+                        } else {
+                            line[1..].to_string()
+                        },
                         old_line: Some(old_line),
                         new_line: Some(new_line),
                     });
@@ -362,13 +366,13 @@ impl Diff {
 
                 let content = format!("{}{}", prefix, &line.content);
                 let wrapped = wrap_line(&content, w);
-                
+
                 for (i, wrapped_line) in wrapped.iter().enumerate() {
                     if i == 0 {
                         lines.push(styled(wrapped_line));
                     } else {
                         // Continuation line
-                        lines.push(styled(&format!(" {}" , wrapped_line)));
+                        lines.push(styled(&format!(" {}", wrapped_line)));
                     }
                 }
             }
@@ -380,7 +384,7 @@ impl Diff {
     fn render_side_by_side(&self, width: u16) -> Vec<String> {
         let w = width as usize;
         let half_width = (w / 2).saturating_sub(1);
-        
+
         let mut lines = Vec::new();
 
         for hunk in &self.hunks {
@@ -398,42 +402,54 @@ impl Diff {
                         let left = truncate_line(content, half_width);
                         let right = truncate_line(content, half_width);
                         let line_num = if self.show_line_numbers {
-                            format!("{:4} {:4} ", 
+                            format!(
+                                "{:4} {:4} ",
                                 line.old_line.map(|n| n.to_string()).unwrap_or_default(),
-                                line.new_line.map(|n| n.to_string()).unwrap_or_default())
+                                line.new_line.map(|n| n.to_string()).unwrap_or_default()
+                            )
                         } else {
                             String::new()
                         };
-                        lines.push(format!("{}{}│{}", 
-                            line_num, 
+                        lines.push(format!(
+                            "{}{}│{}",
+                            line_num,
                             (self.theme.context)(&left),
-                            (self.theme.context)(&right)));
+                            (self.theme.context)(&right)
+                        ));
                     }
                     DiffLineKind::Removed => {
                         let left = truncate_line(&line.content, half_width);
                         let line_num = if self.show_line_numbers {
-                            format!("{:4}     ", 
-                                line.old_line.map(|n| n.to_string()).unwrap_or_default())
+                            format!(
+                                "{:4}     ",
+                                line.old_line.map(|n| n.to_string()).unwrap_or_default()
+                            )
                         } else {
                             String::new()
                         };
-                        lines.push(format!("{}{}│{}", 
+                        lines.push(format!(
+                            "{}{}│{}",
                             line_num,
                             (self.theme.removed)(&left),
-                            " ".repeat(half_width)));
+                            " ".repeat(half_width)
+                        ));
                     }
                     DiffLineKind::Added => {
                         let right = truncate_line(&line.content, half_width);
                         let line_num = if self.show_line_numbers {
-                            format!("     {:4} ", 
-                                line.new_line.map(|n| n.to_string()).unwrap_or_default())
+                            format!(
+                                "     {:4} ",
+                                line.new_line.map(|n| n.to_string()).unwrap_or_default()
+                            )
                         } else {
                             String::new()
                         };
-                        lines.push(format!("{}{}│{}", 
+                        lines.push(format!(
+                            "{}{}│{}",
                             line_num,
                             " ".repeat(half_width),
-                            (self.theme.added)(&right)));
+                            (self.theme.added)(&right)
+                        ));
                     }
                     DiffLineKind::Header => {}
                 }
@@ -480,7 +496,7 @@ fn wrap_line(line: &str, max_width: usize) -> Vec<String> {
 
     let mut result = Vec::new();
     let mut chars = line.chars();
-    
+
     while result.len() * max_width < char_count {
         let chunk: String = chars.by_ref().take(max_width).collect();
         if !chunk.is_empty() {

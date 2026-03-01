@@ -86,10 +86,7 @@ impl SessionLock {
     /// - `std::io::ErrorKind::TimedOut` – timeout elapsed before the lock
     ///   could be obtained.
     /// - Any other `io::Error` from opening or locking the file.
-    pub fn acquire_with_timeout(
-        session_path: &Path,
-        timeout: Duration,
-    ) -> std::io::Result<Self> {
+    pub fn acquire_with_timeout(session_path: &Path, timeout: Duration) -> std::io::Result<Self> {
         let lock_path = Self::companion_lock_path(session_path);
         let file = Self::open_lock_file(&lock_path)?;
 
@@ -171,10 +168,7 @@ mod tests {
     use uuid::Uuid;
 
     fn temp_session_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "pi-rs-lock-test-{name}-{}.jsonl",
-            Uuid::new_v4()
-        ))
+        std::env::temp_dir().join(format!("pi-rs-lock-test-{name}-{}.jsonl", Uuid::new_v4()))
     }
 
     // -------------------------------------------------------------------------
@@ -185,8 +179,8 @@ mod tests {
     fn acquire_and_release_succeeds() {
         let session = temp_session_path("acquire-release");
 
-        let lock = SessionLock::try_acquire(&session)
-            .expect("should acquire lock on fresh session path");
+        let lock =
+            SessionLock::try_acquire(&session).expect("should acquire lock on fresh session path");
 
         // The companion .lock file must exist while the lock is held.
         assert!(
@@ -199,8 +193,8 @@ mod tests {
 
         // After release the companion file still exists (by design) but the
         // lock is no longer held.  We verify re-acquisition works.
-        let lock2 = SessionLock::try_acquire(&session)
-            .expect("should re-acquire lock after release");
+        let lock2 =
+            SessionLock::try_acquire(&session).expect("should re-acquire lock after release");
         lock2.release();
     }
 
@@ -219,8 +213,7 @@ mod tests {
     fn double_acquire_fails() {
         let session = temp_session_path("double-acquire");
 
-        let _lock1 = SessionLock::try_acquire(&session)
-            .expect("first acquire should succeed");
+        let _lock1 = SessionLock::try_acquire(&session).expect("first acquire should succeed");
 
         // A second acquire via a fresh open() creates a new file description,
         // so flock should reject it.
@@ -245,8 +238,7 @@ mod tests {
         let session = temp_session_path("drop-release");
 
         {
-            let _lock = SessionLock::try_acquire(&session)
-                .expect("first acquire should succeed");
+            let _lock = SessionLock::try_acquire(&session).expect("first acquire should succeed");
             // `_lock` is dropped here at the end of this block.
         }
 
@@ -280,13 +272,11 @@ mod tests {
         let session = temp_session_path("timeout-contended");
 
         // Hold the lock in the current thread.
-        let _lock = SessionLock::try_acquire(&session)
-            .expect("first acquire should succeed");
+        let _lock = SessionLock::try_acquire(&session).expect("first acquire should succeed");
 
         // Attempt to acquire from a second file description with a very short
         // timeout so the test does not take long.
-        let result =
-            SessionLock::acquire_with_timeout(&session, Duration::from_millis(30));
+        let result = SessionLock::acquire_with_timeout(&session, Duration::from_millis(30));
 
         assert!(
             result.is_err(),
@@ -311,8 +301,8 @@ mod tests {
         let session_a = temp_session_path("indep-a");
         let session_b = temp_session_path("indep-b");
 
-        let lock_a = SessionLock::try_acquire(&session_a)
-            .expect("lock on session A should succeed");
+        let lock_a =
+            SessionLock::try_acquire(&session_a).expect("lock on session A should succeed");
         let lock_b = SessionLock::try_acquire(&session_b)
             .expect("lock on session B should succeed even while A is locked");
 

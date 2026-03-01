@@ -64,6 +64,6 @@ pub use providers::{
 pub use auth::api_key::{get_api_key, is_valid_api_key, require_api_key};
 
 // Utils
-pub use utils::parse_partial_json;
 pub use utils::build_http_client;
+pub use utils::parse_partial_json;
 pub use utils::proxy::configure_proxy;

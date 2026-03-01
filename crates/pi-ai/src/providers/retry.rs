@@ -291,8 +291,7 @@ impl LLMProvider for RetryProvider {
 
                     debug!(
                         provider = self.inner.name(),
-                        attempt,
-                        "RetryProvider: sleeping before next attempt"
+                        attempt, "RetryProvider: sleeping before next attempt"
                     );
 
                     tokio::time::sleep(delay).await;
@@ -602,7 +601,11 @@ mod tests {
 
         let result = provider.stream(&model, &ctx, &opts, tx).await;
 
-        assert!(result.is_ok(), "expected success after retries: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "expected success after retries: {:?}",
+            result
+        );
         // 2 failures + 1 success = 3 total calls.
         assert_eq!(
             call_count.load(Ordering::SeqCst),
@@ -617,8 +620,7 @@ mod tests {
     /// Test 2 — Does NOT retry on an auth error; fails immediately.
     #[tokio::test]
     async fn no_retry_on_auth_error() {
-        let (inner, call_count) =
-            AlwaysFailProvider::new(|| PiAiError::Auth("invalid key".into()));
+        let (inner, call_count) = AlwaysFailProvider::new(|| PiAiError::Auth("invalid key".into()));
 
         let config = RetryConfig {
             max_retries: 5,
@@ -699,7 +701,11 @@ mod tests {
 
         let result = provider.stream(&model, &ctx, &opts, tx).await;
 
-        assert!(result.is_ok(), "expected success after rate-limit retry: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "expected success after rate-limit retry: {:?}",
+            result
+        );
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
         let event = rx.recv().await.expect("expected Done event");

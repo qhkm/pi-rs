@@ -492,7 +492,9 @@ mod tests {
         assert_eq!(ImageFormat::from_bytes(&gif), Some(ImageFormat::Gif));
 
         // WebP
-        let webp = vec![b'R', b'I', b'F', b'F', 0x00, 0x00, 0x00, 0x00, b'W', b'E', b'B', b'P'];
+        let webp = vec![
+            b'R', b'I', b'F', b'F', 0x00, 0x00, 0x00, 0x00, b'W', b'E', b'B', b'P',
+        ];
         assert_eq!(ImageFormat::from_bytes(&webp), Some(ImageFormat::Webp));
 
         // Invalid

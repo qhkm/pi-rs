@@ -19,7 +19,6 @@
 /// - Service account JSON key files (JWT signing with RS256)
 /// - Application Default Credentials via `gcloud auth application-default login`
 /// - Static access tokens
-
 use std::collections::HashMap;
 
 use async_trait::async_trait;
@@ -89,7 +88,7 @@ impl VertexProvider {
         let project_id = std::env::var("GOOGLE_CLOUD_PROJECT")
             .or_else(|_| std::env::var("GOOGLE_VERTEX_PROJECT"))
             .ok()?;
-        
+
         let location = std::env::var("GOOGLE_CLOUD_LOCATION")
             .or_else(|_| std::env::var("GOOGLE_VERTEX_LOCATION"))
             .unwrap_or_else(|_| "us-central1".to_string());
@@ -111,7 +110,7 @@ impl VertexProvider {
     fn load_service_account(path: &str) -> Result<VertexCredentials> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| PiAiError::Auth(format!("Failed to read service account file: {}", e)))?;
-        
+
         let json: Value = serde_json::from_str(&content)
             .map_err(|e| PiAiError::Auth(format!("Invalid service account JSON: {}", e)))?;
 
@@ -119,12 +118,12 @@ impl VertexProvider {
             .as_str()
             .ok_or_else(|| PiAiError::Auth("Missing client_email in service account".to_string()))?
             .to_string();
-        
+
         let private_key = json["private_key"]
             .as_str()
             .ok_or_else(|| PiAiError::Auth("Missing private_key in service account".to_string()))?
             .to_string();
-        
+
         let token_uri = json["token_uri"]
             .as_str()
             .unwrap_or("https://oauth2.googleapis.com/token")
@@ -153,18 +152,24 @@ impl VertexProvider {
         // Need to get/refresh token
         let new_token = match &self.credentials {
             VertexCredentials::AccessToken(token) => token.clone(),
-            VertexCredentials::ServiceAccount { client_email, private_key, token_uri } => {
-                self.fetch_service_account_token(client_email, private_key, token_uri).await?
+            VertexCredentials::ServiceAccount {
+                client_email,
+                private_key,
+                token_uri,
+            } => {
+                self.fetch_service_account_token(client_email, private_key, token_uri)
+                    .await?
             }
-            VertexCredentials::Adc => {
-                self.fetch_adc_token().await?
-            }
+            VertexCredentials::Adc => self.fetch_adc_token().await?,
         };
 
         let mut cached = self.access_token.write().await;
         // Token expires in 1 hour from now (standard for Google OAuth)
-        *cached = Some((new_token.clone(), chrono::Utc::now() + chrono::Duration::hours(1)));
-        
+        *cached = Some((
+            new_token.clone(),
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        ));
+
         Ok(new_token)
     }
 
@@ -216,10 +221,7 @@ impl VertexProvider {
             .client
             .post(token_uri)
             .form(&[
-                (
-                    "grant_type",
-                    "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                ),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                 ("assertion", &jwt),
             ])
             .send()
@@ -249,15 +251,20 @@ impl VertexProvider {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .map_err(|_| PiAiError::Auth("Cannot find HOME directory for ADC".to_string()))?;
-        
-        let adc_path = format!("{}/.config/gcloud/application_default_credentials.json", home);
-        
-        let content = std::fs::read_to_string(&adc_path)
-            .map_err(|_| PiAiError::Auth(
+
+        let adc_path = format!(
+            "{}/.config/gcloud/application_default_credentials.json",
+            home
+        );
+
+        let content = std::fs::read_to_string(&adc_path).map_err(|_| {
+            PiAiError::Auth(
                 "No ADC credentials found. Run 'gcloud auth application-default login' \
-                 or set GOOGLE_APPLICATION_CREDENTIALS".to_string()
-            ))?;
-        
+                 or set GOOGLE_APPLICATION_CREDENTIALS"
+                    .to_string(),
+            )
+        })?;
+
         let json: Value = serde_json::from_str(&content)
             .map_err(|e| PiAiError::Auth(format!("Invalid ADC JSON: {}", e)))?;
 
@@ -269,8 +276,10 @@ impl VertexProvider {
             let client_secret = json["client_secret"]
                 .as_str()
                 .ok_or_else(|| PiAiError::Auth("Missing client_secret in ADC".to_string()))?;
-            
-            return self.exchange_refresh_token(refresh_token, client_id, client_secret).await;
+
+            return self
+                .exchange_refresh_token(refresh_token, client_id, client_secret)
+                .await;
         }
 
         // Check if this is an access token directly
@@ -305,7 +314,10 @@ impl VertexProvider {
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Token exchange failed: {}", error_text)));
+            return Err(PiAiError::Auth(format!(
+                "Token exchange failed: {}",
+                error_text
+            )));
         }
 
         let token_response: Value = response
@@ -338,21 +350,19 @@ fn build_vertex_messages(messages: &[Message]) -> Vec<Value> {
                     UserContent::Text(t) => {
                         vec![json!({"text": t})]
                     }
-                    UserContent::Blocks(blocks) => {
-                        blocks
-                            .iter()
-                            .filter_map(|c| match c {
-                                Content::Text { text, .. } => Some(json!({"text": text})),
-                                Content::Image { data, mime_type } => Some(json!({
-                                    "inlineData": {
-                                        "mimeType": mime_type,
-                                        "data": data
-                                    }
-                                })),
-                                _ => None,
-                            })
-                            .collect()
-                    }
+                    UserContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|c| match c {
+                            Content::Text { text, .. } => Some(json!({"text": text})),
+                            Content::Image { data, mime_type } => Some(json!({
+                                "inlineData": {
+                                    "mimeType": mime_type,
+                                    "data": data
+                                }
+                            })),
+                            _ => None,
+                        })
+                        .collect(),
                 };
                 result.push(json!({
                     "role": "user",
@@ -381,7 +391,13 @@ fn build_vertex_messages(messages: &[Message]) -> Vec<Value> {
 
                 // Add function calls (tool calls)
                 for c in &am.content {
-                    if let Content::ToolCall { id: _, name, arguments, .. } = c {
+                    if let Content::ToolCall {
+                        id: _,
+                        name,
+                        arguments,
+                        ..
+                    } = c
+                    {
                         parts.push(json!({
                             "functionCall": {
                                 "name": name,
@@ -816,11 +832,7 @@ mod tests {
 
     #[test]
     fn vertex_provider_creation() {
-        let provider = VertexProvider::new(
-            "my-project",
-            "us-central1",
-            VertexCredentials::Adc,
-        );
+        let provider = VertexProvider::new("my-project", "us-central1", VertexCredentials::Adc);
         assert_eq!(provider.name(), "google-vertex");
         assert_eq!(provider.project_id, "my-project");
         assert_eq!(provider.location, "us-central1");

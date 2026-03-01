@@ -22,7 +22,6 @@
 ///
 /// The function returns `None` for empty or whitespace-only input and for any
 /// input that cannot yield at least one key-value pair.
-
 use serde_json::Value;
 
 // ─── Public API ───────────────────────────────────────────────────────────────

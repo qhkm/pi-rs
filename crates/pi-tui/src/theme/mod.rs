@@ -289,58 +289,114 @@ impl std::error::Error for ThemeError {}
 /// Default dark theme.
 pub fn dark_theme() -> Theme {
     let mut theme = Theme::new("dark");
-    
+
     // Background colors
-    theme.bg.insert("default".to_string(), Color::Name("default".to_string()));
+    theme
+        .bg
+        .insert("default".to_string(), Color::Name("default".to_string()));
     theme.bg.insert("panel".to_string(), Color::Indexed(236));
     theme.bg.insert("selected".to_string(), Color::Indexed(24));
-    theme.bg.insert("highlight".to_string(), Color::Indexed(237));
-    
+    theme
+        .bg
+        .insert("highlight".to_string(), Color::Indexed(237));
+
     // Foreground colors
-    theme.fg.insert("default".to_string(), Color::Name("white".to_string()));
-    theme.fg.insert("muted".to_string(), Color::Name("bright-black".to_string()));
-    theme.fg.insert("accent".to_string(), Color::Name("cyan".to_string()));
-    theme.fg.insert("success".to_string(), Color::Name("green".to_string()));
-    theme.fg.insert("warning".to_string(), Color::Name("yellow".to_string()));
-    theme.fg.insert("error".to_string(), Color::Name("red".to_string()));
-    theme.fg.insert("info".to_string(), Color::Name("blue".to_string()));
-    
+    theme
+        .fg
+        .insert("default".to_string(), Color::Name("white".to_string()));
+    theme
+        .fg
+        .insert("muted".to_string(), Color::Name("bright-black".to_string()));
+    theme
+        .fg
+        .insert("accent".to_string(), Color::Name("cyan".to_string()));
+    theme
+        .fg
+        .insert("success".to_string(), Color::Name("green".to_string()));
+    theme
+        .fg
+        .insert("warning".to_string(), Color::Name("yellow".to_string()));
+    theme
+        .fg
+        .insert("error".to_string(), Color::Name("red".to_string()));
+    theme
+        .fg
+        .insert("info".to_string(), Color::Name("blue".to_string()));
+
     // Syntax highlighting
-    theme.syntax.insert("keyword".to_string(), Color::Name("magenta".to_string()));
-    theme.syntax.insert("string".to_string(), Color::Name("green".to_string()));
-    theme.syntax.insert("comment".to_string(), Color::Name("bright-black".to_string()));
-    theme.syntax.insert("function".to_string(), Color::Name("blue".to_string()));
-    theme.syntax.insert("variable".to_string(), Color::Name("cyan".to_string()));
-    theme.syntax.insert("number".to_string(), Color::Name("yellow".to_string()));
-    
+    theme
+        .syntax
+        .insert("keyword".to_string(), Color::Name("magenta".to_string()));
+    theme
+        .syntax
+        .insert("string".to_string(), Color::Name("green".to_string()));
+    theme.syntax.insert(
+        "comment".to_string(),
+        Color::Name("bright-black".to_string()),
+    );
+    theme
+        .syntax
+        .insert("function".to_string(), Color::Name("blue".to_string()));
+    theme
+        .syntax
+        .insert("variable".to_string(), Color::Name("cyan".to_string()));
+    theme
+        .syntax
+        .insert("number".to_string(), Color::Name("yellow".to_string()));
+
     theme
 }
 
 /// Light theme.
 pub fn light_theme() -> Theme {
     let mut theme = Theme::new("light");
-    
-    theme.fg.insert("default".to_string(), Color::Name("black".to_string()));
+
+    theme
+        .fg
+        .insert("default".to_string(), Color::Name("black".to_string()));
     theme.fg.insert("muted".to_string(), Color::Indexed(240));
-    theme.fg.insert("accent".to_string(), Color::Name("blue".to_string()));
-    theme.fg.insert("success".to_string(), Color::Name("green".to_string()));
-    theme.fg.insert("warning".to_string(), Color::Name("yellow".to_string()));
-    theme.fg.insert("error".to_string(), Color::Name("red".to_string()));
-    
+    theme
+        .fg
+        .insert("accent".to_string(), Color::Name("blue".to_string()));
+    theme
+        .fg
+        .insert("success".to_string(), Color::Name("green".to_string()));
+    theme
+        .fg
+        .insert("warning".to_string(), Color::Name("yellow".to_string()));
+    theme
+        .fg
+        .insert("error".to_string(), Color::Name("red".to_string()));
+
     theme
 }
 
 /// High contrast theme for accessibility.
 pub fn high_contrast_theme() -> Theme {
     let mut theme = Theme::new("high-contrast");
-    
-    theme.fg.insert("default".to_string(), Color::Name("bright-white".to_string()));
-    theme.bg.insert("default".to_string(), Color::Name("black".to_string()));
-    theme.fg.insert("accent".to_string(), Color::Name("bright-cyan".to_string()));
-    theme.fg.insert("success".to_string(), Color::Name("bright-green".to_string()));
-    theme.fg.insert("warning".to_string(), Color::Name("bright-yellow".to_string()));
-    theme.fg.insert("error".to_string(), Color::Name("bright-red".to_string()));
-    
+
+    theme.fg.insert(
+        "default".to_string(),
+        Color::Name("bright-white".to_string()),
+    );
+    theme
+        .bg
+        .insert("default".to_string(), Color::Name("black".to_string()));
+    theme
+        .fg
+        .insert("accent".to_string(), Color::Name("bright-cyan".to_string()));
+    theme.fg.insert(
+        "success".to_string(),
+        Color::Name("bright-green".to_string()),
+    );
+    theme.fg.insert(
+        "warning".to_string(),
+        Color::Name("bright-yellow".to_string()),
+    );
+    theme
+        .fg
+        .insert("error".to_string(), Color::Name("bright-red".to_string()));
+
     theme
 }
 
@@ -359,7 +415,7 @@ impl ThemeManager {
         themes.insert("dark".to_string(), dark_theme());
         themes.insert("light".to_string(), light_theme());
         themes.insert("high-contrast".to_string(), high_contrast_theme());
-        
+
         Self {
             current: Arc::new(RwLock::new(dark_theme())),
             themes,
@@ -390,14 +446,12 @@ impl ThemeManager {
     pub fn set_theme_file(&mut self, path: impl AsRef<Path>) -> Result<(), ThemeError> {
         let path = path.as_ref().to_path_buf();
         let theme = Theme::from_file(&path)?;
-        
-        self.last_modified = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok();
-        
+
+        self.last_modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
         self.watch_path = Some(path);
         *self.current.write().unwrap() = theme;
-        
+
         Ok(())
     }
 
@@ -409,10 +463,8 @@ impl ThemeManager {
     /// Check if theme file has changed and reload if necessary.
     pub fn check_reload(&mut self) -> Result<bool, ThemeError> {
         if let Some(ref path) = self.watch_path {
-            let modified = std::fs::metadata(path)
-                .and_then(|m| m.modified())
-                .ok();
-            
+            let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+
             if modified != self.last_modified {
                 if let Some(new_theme) = Theme::from_file(path).ok() {
                     *self.current.write().unwrap() = new_theme;
@@ -449,20 +501,18 @@ mod tests {
     fn test_color_to_ansi() {
         let red = Color::Name("red".to_string());
         assert_eq!(red.to_fg_ansi(), "\x1b[31m");
-        
+
         let indexed = Color::Indexed(100);
         assert_eq!(indexed.to_fg_ansi(), "\x1b[38;5;100m");
-        
+
         let hex = Color::Hex("#ff0000".to_string());
         assert_eq!(hex.to_fg_ansi(), "\x1b[38;2;255;0;0m");
     }
 
     #[test]
     fn test_style_apply() {
-        let style = Style::new()
-            .fg(Color::Name("red".to_string()))
-            .bold();
-        
+        let style = Style::new().fg(Color::Name("red".to_string())).bold();
+
         let styled = style.apply("Hello");
         assert!(styled.contains("\x1b["));
         assert!(styled.contains("Hello"));
@@ -480,10 +530,10 @@ mod tests {
     #[test]
     fn test_theme_manager() {
         let mut manager = ThemeManager::new();
-        
+
         assert!(manager.load("dark").is_some());
         assert!(manager.load("nonexistent").is_none());
-        
+
         manager.set_theme("dark").unwrap();
         let current = manager.current();
         assert_eq!(current.name, "dark");

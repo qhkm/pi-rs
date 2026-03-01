@@ -134,19 +134,19 @@ impl CommandDispatcher {
             commands: HashMap::new(),
         }
     }
-    
+
     pub fn register(&mut self, name: &str, handler: Box<dyn CommandHandler>) {
         self.commands.insert(name.to_string(), handler);
     }
-    
+
     pub fn get(&self, name: &str) -> Option<&dyn CommandHandler> {
         self.commands.get(name).map(|h| h.as_ref())
     }
-    
+
     pub fn has(&self, name: &str) -> bool {
         self.commands.contains_key(name)
     }
-    
+
     pub fn execute(&self, name: &str, args: &[String]) -> Result<String> {
         if let Some(handler) = self.get(name) {
             handler.execute(args)
@@ -154,7 +154,7 @@ impl CommandDispatcher {
             anyhow::bail!("Unknown command: {}", name)
         }
     }
-    
+
     pub fn list_commands(&self) -> Vec<&str> {
         self.commands.keys().map(|s| s.as_str()).collect()
     }
@@ -177,12 +177,16 @@ impl CommandHandler for ExtensionCommandHandler {
         // For now, commands are executed as shell scripts in the extension directory
         // Sanitize command name to prevent path traversal
         let command_name = &self.command.name;
-        if command_name.contains('/') || command_name.contains('\\') || command_name.contains("..") {
+        if command_name.contains('/') || command_name.contains('\\') || command_name.contains("..")
+        {
             anyhow::bail!("Invalid command name: {}", command_name);
         }
-        
-        let script_path = self.extension_path.join("commands").join(format!("{}.sh", command_name));
-        
+
+        let script_path = self
+            .extension_path
+            .join("commands")
+            .join(format!("{}.sh", command_name));
+
         // Verify the script exists before canonicalizing
         if !script_path.exists() {
             anyhow::bail!("Command script not found: {}", script_path.display());
@@ -190,27 +194,32 @@ impl CommandHandler for ExtensionCommandHandler {
 
         // Ensure the resolved path is within the extension directory.
         // Both paths MUST canonicalize successfully — if either fails, reject.
-        let canonical_script = script_path.canonicalize()
+        let canonical_script = script_path
+            .canonicalize()
             .with_context(|| format!("Failed to resolve script path: {}", script_path.display()))?;
-        let canonical_ext = self.extension_path.canonicalize()
-            .with_context(|| format!("Failed to resolve extension path: {}", self.extension_path.display()))?;
+        let canonical_ext = self.extension_path.canonicalize().with_context(|| {
+            format!(
+                "Failed to resolve extension path: {}",
+                self.extension_path.display()
+            )
+        })?;
 
         if !canonical_script.starts_with(&canonical_ext) {
             anyhow::bail!("Command script escapes extension directory");
         }
-        
+
         let output = std::process::Command::new("bash")
             .arg(&script_path)
             .args(args)
             .current_dir(&self.extension_path)
             .output()
             .context("Failed to execute command")?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("Command failed: {}", stderr);
         }
-        
+
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 }
@@ -325,7 +334,11 @@ impl RuntimeExtensionTool {
     }
 
     /// Execute the tool without wrapper hooks
-    async fn execute_inner(&self, args: Value, ctx: &ToolContext) -> pi_agent_core::Result<ToolResult> {
+    async fn execute_inner(
+        &self,
+        args: Value,
+        ctx: &ToolContext,
+    ) -> pi_agent_core::Result<ToolResult> {
         let timeout_secs = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(120);
         match &self.executor {
             RuntimeExecutor::Shell { command } => {
@@ -425,7 +438,7 @@ impl AgentTool for RuntimeExtensionTool {
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> pi_agent_core::Result<ToolResult> {
         let mut current_args = args;
-        
+
         // Execute before wrappers
         if let Some(ref registry) = self.wrapper_registry {
             let wrappers = registry.get_wrappers(&self.declared_tool_name);
@@ -437,7 +450,9 @@ impl AgentTool for RuntimeExtensionTool {
                         &current_args,
                         &self.extension_path,
                         WrapperHookType::Before,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok((should_continue, modified_args, modified_result)) => {
                             // If wrapper returned a result, use it immediately
                             if let Some(result) = modified_result {
@@ -467,13 +482,13 @@ impl AgentTool for RuntimeExtensionTool {
                 }
             }
         }
-        
+
         // Clone args for after hooks (before moving into execute_inner)
         let args_for_after = current_args.clone();
-        
+
         // Execute the actual tool
         let mut result = self.execute_inner(current_args, ctx).await?;
-        
+
         // Execute after wrappers
         if let Some(ref registry) = self.wrapper_registry {
             let wrappers = registry.get_wrappers(&self.declared_tool_name);
@@ -487,14 +502,16 @@ impl AgentTool for RuntimeExtensionTool {
                             "is_error": result.is_error,
                         }
                     });
-                    
+
                     match execute_wrapper_hook(
                         wrapper,
                         &self.declared_tool_name,
                         &args_with_result,
                         &self.extension_path,
                         WrapperHookType::After,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok((_, _, modified_result)) => {
                             if let Some(new_result) = modified_result {
                                 result = new_result;
@@ -511,7 +528,7 @@ impl AgentTool for RuntimeExtensionTool {
                 }
             }
         }
-        
+
         Ok(result)
     }
 
@@ -537,7 +554,7 @@ async fn execute_wasm(
 ) -> pi_agent_core::Result<ToolResult> {
     let path_buf = PathBuf::from(path);
     let mut abort_rx = abort.clone();
-    
+
     // Load and execute with timeout
     let result = tokio::select! {
         result = async {
@@ -556,7 +573,7 @@ async fn execute_wasm(
             return Ok(ToolResult::error("WASM execution aborted (watch error)"));
         }
     };
-    
+
     match result {
         Ok(output) => Ok(ToolResult::success(output.to_string())),
         Err(e) => Ok(ToolResult::error(format!("WASM execution failed: {e}"))),
@@ -750,10 +767,7 @@ impl ToolWrapperRegistry {
     /// Register a tool wrapper.
     pub fn register(&mut self, wrapper: ToolWrapperDef) {
         let tool_name = wrapper.tool_name.clone();
-        self.wrappers
-            .entry(tool_name)
-            .or_default()
-            .push(wrapper);
+        self.wrappers.entry(tool_name).or_default().push(wrapper);
     }
 
     /// Get all wrappers for a specific tool.
@@ -817,22 +831,30 @@ pub async fn execute_wrapper_hook(
     let hook_path = match hook_type {
         WrapperHookType::Before => wrapper.before_hook.as_ref(),
         WrapperHookType::After => wrapper.after_hook.as_ref(),
-    }.ok_or_else(|| anyhow::anyhow!("No {} hook script specified", 
-        if hook_type == WrapperHookType::Before { "before" } else { "after" }
-    ))?;
+    }
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "No {} hook script specified",
+            if hook_type == WrapperHookType::Before {
+                "before"
+            } else {
+                "after"
+            }
+        )
+    })?;
 
     let full_hook_path = extension_path.join(hook_path);
-    
+
     // Validate hook path stays within extension directory (prevent path traversal)
     let canonical_hook = full_hook_path.canonicalize().ok();
     let canonical_ext = extension_path.canonicalize().ok();
-    
+
     if let (Some(hook), Some(ext)) = (&canonical_hook, &canonical_ext) {
         if !hook.starts_with(ext) {
             anyhow::bail!("Wrapper hook path escapes extension directory");
         }
     }
-    
+
     // Sanitize hook name to prevent traversal
     if hook_path.contains("..") || hook_path.contains('/') || hook_path.contains('\\') {
         anyhow::bail!("Invalid hook path: {}", hook_path);
@@ -851,7 +873,12 @@ pub async fn execute_wrapper_hook(
         .stderr(Stdio::piped())
         .output()
         .await
-        .with_context(|| format!("Failed to execute wrapper hook: {}", full_hook_path.display()))?;
+        .with_context(|| {
+            format!(
+                "Failed to execute wrapper hook: {}",
+                full_hook_path.display()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -997,10 +1024,10 @@ mod tests {
 
         let mut dispatcher = CommandDispatcher::new();
         dispatcher.register("test", Box::new(TestHandler));
-        
+
         assert!(dispatcher.has("test"));
         assert!(!dispatcher.has("unknown"));
-        
+
         let result = dispatcher.execute("test", &["arg1".to_string()]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "executed with 1 args");
@@ -1009,7 +1036,7 @@ mod tests {
     #[test]
     fn tool_wrapper_registry_registers_and_retrieves() {
         let mut registry = ToolWrapperRegistry::new();
-        
+
         let wrapper = ToolWrapperDef {
             tool_name: "read".to_string(),
             description: "Log all read calls".to_string(),
@@ -1017,12 +1044,12 @@ mod tests {
             before_hook: Some("wrap.sh".to_string()),
             after_hook: None,
         };
-        
+
         registry.register(wrapper);
-        
+
         assert!(registry.has_wrappers("read"));
         assert!(!registry.has_wrappers("write"));
-        
+
         let wrappers = registry.get_wrappers("read");
         assert_eq!(wrappers.len(), 1);
         assert_eq!(wrappers[0].tool_name, "read");
@@ -1031,7 +1058,7 @@ mod tests {
     #[test]
     fn tool_wrapper_registry_global_wildcard() {
         let mut registry = ToolWrapperRegistry::new();
-        
+
         let global = ToolWrapperDef {
             tool_name: "*".to_string(),
             description: "Log all tool calls".to_string(),
@@ -1039,9 +1066,9 @@ mod tests {
             before_hook: Some("global_wrap.sh".to_string()),
             after_hook: None,
         };
-        
+
         registry.register(global);
-        
+
         // Any tool should have the global wrapper
         assert!(registry.has_wrappers("read"));
         assert!(registry.has_wrappers("write"));
@@ -1051,7 +1078,7 @@ mod tests {
     #[test]
     fn tool_wrapper_registry_combines_global_and_specific() {
         let mut registry = ToolWrapperRegistry::new();
-        
+
         let global = ToolWrapperDef {
             tool_name: "*".to_string(),
             description: "Global".to_string(),
@@ -1059,7 +1086,7 @@ mod tests {
             before_hook: Some("global.sh".to_string()),
             after_hook: None,
         };
-        
+
         let specific = ToolWrapperDef {
             tool_name: "read".to_string(),
             description: "Specific".to_string(),
@@ -1067,10 +1094,10 @@ mod tests {
             before_hook: Some("read.sh".to_string()),
             after_hook: None,
         };
-        
+
         registry.register(global);
         registry.register(specific);
-        
+
         let wrappers = registry.get_wrappers("read");
         assert_eq!(wrappers.len(), 2);
         // Global should come first

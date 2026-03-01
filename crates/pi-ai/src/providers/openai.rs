@@ -790,10 +790,7 @@ mod tests {
             mime_type: "image/jpeg".to_string(),
         };
         let msg = Message::User(crate::messages::types::UserMessage {
-            content: UserContent::Blocks(vec![
-                Content::text("What is in this picture?"),
-                image,
-            ]),
+            content: UserContent::Blocks(vec![Content::text("What is in this picture?"), image]),
             timestamp: Utc::now().timestamp_millis(),
         });
 

@@ -32,6 +32,6 @@
 pub mod framework;
 
 pub use framework::{
-    App, AppContext, AppResult, FocusArea, LayoutApp,
     render::{box_border, hline, status_bar},
+    App, AppContext, AppResult, FocusArea, LayoutApp,
 };

@@ -147,7 +147,10 @@ impl StoredToken {
             token_type: response.token_type,
             obtained_at: now,
             expires_at,
-            scopes: response.scope.map(|s| s.split(' ').map(String::from).collect()).unwrap_or_default(),
+            scopes: response
+                .scope
+                .map(|s| s.split(' ').map(String::from).collect())
+                .unwrap_or_default(),
             provider: provider.to_string(),
         }
     }
@@ -185,9 +188,10 @@ impl PkceVerifier {
     /// Generate a new PKCE verifier with S256 method.
     pub fn new_s256() -> Self {
         use rand::Rng;
-        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+        const CHARSET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
         let mut rng = rand::thread_rng();
-        
+
         // Generate 128-character verifier
         let verifier: String = (0..128)
             .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
@@ -207,7 +211,7 @@ impl PkceVerifier {
     fn compute_challenge(verifier: &str) -> String {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
         use sha2::{Digest, Sha256};
-        
+
         let mut hasher = Sha256::new();
         hasher.update(verifier.as_bytes());
         let hash = hasher.finalize();
@@ -258,7 +262,9 @@ impl OAuthManager {
             "github-copilot" => self.github_device_flow().await,
             "google-gemini" => self.google_device_flow().await,
             "openai-codex" => self.openai_device_flow().await,
-            _ => Err(PiAiError::Auth(format!("Device flow not supported for {provider}"))),
+            _ => Err(PiAiError::Auth(format!(
+                "Device flow not supported for {provider}"
+            ))),
         }
     }
 
@@ -268,12 +274,14 @@ impl OAuthManager {
             "github-copilot" => self.poll_github_device_flow(device_code).await,
             "google-gemini" => self.poll_google_device_flow(device_code).await,
             "openai-codex" => self.poll_openai_device_flow(device_code).await,
-            _ => Err(PiAiError::Auth(format!("Device flow not supported for {provider}"))),
+            _ => Err(PiAiError::Auth(format!(
+                "Device flow not supported for {provider}"
+            ))),
         }
     }
 
     /// Get a valid access token for a provider.
-    /// 
+    ///
     /// If the stored token is expired and has a refresh token, it will be refreshed.
     pub async fn get_access_token(&self, provider: &str) -> Result<String> {
         // Try to load existing token
@@ -281,7 +289,7 @@ impl OAuthManager {
             if !token.is_expired() {
                 return Ok(token.access_token);
             }
-            
+
             // Token expired, try to refresh
             if token.can_refresh() {
                 match self.refresh_token(&token).await {
@@ -304,7 +312,9 @@ impl OAuthManager {
 
     /// Refresh an access token.
     async fn refresh_token(&self, token: &StoredToken) -> Result<StoredToken> {
-        let refresh_token = token.refresh_token.as_ref()
+        let refresh_token = token
+            .refresh_token
+            .as_ref()
             .ok_or_else(|| PiAiError::Auth("No refresh token available".to_string()))?;
 
         let config = OAuthConfig::for_provider(&token.provider)
@@ -316,17 +326,19 @@ impl OAuthManager {
             ("client_id", &config.client_id),
         ];
 
-        let response = self.client
+        let response = self
+            .client
             .post(&config.token_url)
             .header("Accept", "application/json")
             .form(&params)
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Token refresh failed: {error_text}")));
+            return Err(PiAiError::Auth(format!(
+                "Token refresh failed: {error_text}"
+            )));
         }
 
         let token_response: TokenResponse = response
@@ -344,17 +356,19 @@ impl OAuthManager {
             ("scope", "read:user"),
         ];
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://github.com/login/device/code")
             .header("Accept", "application/json")
             .form(&params)
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Device flow initiation failed: {error_text}")));
+            return Err(PiAiError::Auth(format!(
+                "Device flow initiation failed: {error_text}"
+            )));
         }
 
         let device_response: GitHubDeviceCodeResponse = response
@@ -379,17 +393,19 @@ impl OAuthManager {
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ];
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://github.com/login/oauth/access_token")
             .header("Accept", "application/json")
             .form(&params)
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Token request failed: {error_text}")));
+            return Err(PiAiError::Auth(format!(
+                "Token request failed: {error_text}"
+            )));
         }
 
         let token_response: TokenResponse = response
@@ -398,8 +414,10 @@ impl OAuthManager {
             .map_err(|e| PiAiError::Config(e.to_string()))?;
 
         // For GitHub Copilot, we need to exchange the GitHub token for a Copilot token
-        let copilot_token = self.exchange_github_for_copilot(&token_response.access_token).await?;
-        
+        let copilot_token = self
+            .exchange_github_for_copilot(&token_response.access_token)
+            .await?;
+
         Ok(StoredToken::from_response(
             TokenResponse {
                 access_token: copilot_token,
@@ -408,19 +426,19 @@ impl OAuthManager {
                 expires_in: token_response.expires_in,
                 scope: token_response.scope,
             },
-            "github-copilot"
+            "github-copilot",
         ))
     }
 
     /// Exchange GitHub token for Copilot token.
     async fn exchange_github_for_copilot(&self, github_token: &str) -> Result<String> {
-        let response = self.client
+        let response = self
+            .client
             .get("https://api.github.com/copilot_internal/v2/token")
             .header("Authorization", format!("Bearer {}", github_token))
             .header("Accept", "application/json")
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             return Err(PiAiError::Auth("Failed to get Copilot token".to_string()));
@@ -441,16 +459,18 @@ impl OAuthManager {
             ("scope", "https://www.googleapis.com/auth/generative-language.retriever https://www.googleapis.com/auth/cloud-platform"),
         ];
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://oauth2.googleapis.com/device/code")
             .form(&params)
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Device flow initiation failed: {error_text}")));
+            return Err(PiAiError::Auth(format!(
+                "Device flow initiation failed: {error_text}"
+            )));
         }
 
         let device_response: GoogleDeviceCodeResponse = response
@@ -475,16 +495,18 @@ impl OAuthManager {
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ];
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://oauth2.googleapis.com/token")
             .form(&params)
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Token request failed: {error_text}")));
+            return Err(PiAiError::Auth(format!(
+                "Token request failed: {error_text}"
+            )));
         }
 
         let token_response: TokenResponse = response
@@ -498,22 +520,21 @@ impl OAuthManager {
     /// OpenAI device flow implementation.
     async fn openai_device_flow(&self) -> Result<DeviceFlowResponse> {
         // OpenAI uses a custom device flow
-        let params = [
-            ("client_id", OPENAI_CODEX_CLIENT_ID),
-            ("scope", "codex"),
-        ];
+        let params = [("client_id", OPENAI_CODEX_CLIENT_ID), ("scope", "codex")];
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://auth.openai.com/device/code")
             .header("Accept", "application/json")
             .form(&params)
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Device flow initiation failed: {error_text}")));
+            return Err(PiAiError::Auth(format!(
+                "Device flow initiation failed: {error_text}"
+            )));
         }
 
         let device_response: OpenAIDeviceCodeResponse = response
@@ -538,17 +559,19 @@ impl OAuthManager {
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ];
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://auth.openai.com/token")
             .header("Accept", "application/json")
             .form(&params)
             .send()
-            .await
-            ?;
+            .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(PiAiError::Auth(format!("Token request failed: {error_text}")));
+            return Err(PiAiError::Auth(format!(
+                "Token request failed: {error_text}"
+            )));
         }
 
         let token_response: TokenResponse = response
@@ -686,8 +709,7 @@ impl TokenStorage {
 
     /// Save a token (encrypted with AES-256-GCM).
     pub fn save_token(&self, provider: &str, token: &StoredToken) -> Result<()> {
-        let json = serde_json::to_string(token)
-            .map_err(|e| PiAiError::Config(e.to_string()))?;
+        let json = serde_json::to_string(token).map_err(|e| PiAiError::Config(e.to_string()))?;
 
         let encrypted = self.encrypt(json.as_bytes())?;
         let path = self.token_path(provider);
@@ -724,8 +746,8 @@ impl TokenStorage {
         let encrypted = std::fs::read(&path)?;
         let decrypted = self.decrypt(&encrypted)?;
 
-        let token: StoredToken = serde_json::from_slice(&decrypted)
-            .map_err(|e| PiAiError::Config(e.to_string()))?;
+        let token: StoredToken =
+            serde_json::from_slice(&decrypted).map_err(|e| PiAiError::Config(e.to_string()))?;
 
         Ok(Some(token))
     }
@@ -883,7 +905,12 @@ impl TokenStorage {
         {
             // Try to read the Windows MachineGuid from the registry.
             if let Ok(output) = std::process::Command::new("reg")
-                .args(["query", r"HKLM\SOFTWARE\Microsoft\Cryptography", "/v", "MachineGuid"])
+                .args([
+                    "query",
+                    r"HKLM\SOFTWARE\Microsoft\Cryptography",
+                    "/v",
+                    "MachineGuid",
+                ])
                 .output()
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);

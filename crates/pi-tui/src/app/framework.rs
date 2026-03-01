@@ -417,7 +417,6 @@ impl<T> LayoutApp<T> {
             (self.render_input)(&self.state, ctx);
         }
 
-
         Ok(())
     }
 }

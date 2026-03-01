@@ -14,6 +14,12 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+authors = ["qhkm"]
+repository = "https://github.com/qhkm/pi-rs"
+homepage = "https://github.com/qhkm/pi-rs"
+keywords = ["ai", "coding-agent", "llm", "cli", "tui"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.75"
 
 [workspace.dependencies]
 # Async runtime

@@ -74,11 +74,11 @@ pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
 
     // Process remaining unquoted references
     let mut final_remaining = String::new();
-    
+
     for word in processed.split_whitespace() {
         if word.starts_with('@') && word.len() > 1 {
             let file_ref = &word[1..];
-            
+
             if let Err(_) = process_file_ref(file_ref, cwd, &mut text_parts, &mut images) {
                 // File doesn't exist - keep as literal
                 if !final_remaining.is_empty() {
@@ -93,7 +93,7 @@ pub fn process_input(input: &str, cwd: &Path) -> Result<ProcessedInput> {
             final_remaining.push_str(word);
         }
     }
-    
+
     if !final_remaining.is_empty() {
         remaining_text_parts.push(final_remaining);
     }
@@ -308,7 +308,7 @@ fn process_directory(
     if !dir_path.exists() {
         anyhow::bail!("Directory not found: {}", dir_path.display());
     }
-    
+
     if !dir_path.is_dir() {
         anyhow::bail!("Not a directory: {}", dir_path.display());
     }
@@ -364,7 +364,11 @@ fn process_glob(
         if errors.is_empty() {
             anyhow::bail!("No files matched pattern: {}", pattern);
         } else {
-            anyhow::bail!("Failed to process glob pattern '{}': {}", pattern, errors.join(", "));
+            anyhow::bail!(
+                "Failed to process glob pattern '{}': {}",
+                pattern,
+                errors.join(", ")
+            );
         }
     }
 
@@ -572,8 +576,12 @@ mod tests {
     fn test_quoted_path_with_spaces() {
         let tmp = TempDir::new().unwrap();
         // Create file with spaces in name
-        fs::write(tmp.path().join("file with spaces.txt"), "content with spaces").unwrap();
-        
+        fs::write(
+            tmp.path().join("file with spaces.txt"),
+            "content with spaces",
+        )
+        .unwrap();
+
         let result = process_input("check @\"file with spaces.txt\" please", tmp.path()).unwrap();
         assert!(result.text.contains("<file name=\"file with spaces.txt\">"));
         assert!(result.text.contains("content with spaces"));
@@ -737,7 +745,11 @@ mod tests {
         let sub = tmp.path().join("project");
         fs::create_dir_all(sub.join("src").join("models")).unwrap();
         fs::write(sub.join("src").join("main.rs"), "fn main() {}").unwrap();
-        fs::write(sub.join("src").join("models").join("user.rs"), "struct User;").unwrap();
+        fs::write(
+            sub.join("src").join("models").join("user.rs"),
+            "struct User;",
+        )
+        .unwrap();
         fs::write(sub.join("readme.txt"), "readme").unwrap();
 
         let result = process_input("@project/**/*.rs", tmp.path()).unwrap();
@@ -819,7 +831,11 @@ mod tests {
 
         // Create 101 files to exceed the limit
         for i in 0..101 {
-            fs::write(sub.join(format!("file_{:03}.txt", i)), format!("content {}", i)).unwrap();
+            fs::write(
+                sub.join(format!("file_{:03}.txt", i)),
+                format!("content {}", i),
+            )
+            .unwrap();
         }
 
         let result = process_input("@bigdir/", tmp.path()).unwrap();
@@ -834,7 +850,11 @@ mod tests {
         fs::create_dir(&sub).unwrap();
 
         for i in 0..101 {
-            fs::write(sub.join(format!("file_{:03}.txt", i)), format!("content {}", i)).unwrap();
+            fs::write(
+                sub.join(format!("file_{:03}.txt", i)),
+                format!("content {}", i),
+            )
+            .unwrap();
         }
 
         let result = process_input("@bigdir", tmp.path()).unwrap();

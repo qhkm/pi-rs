@@ -242,7 +242,11 @@ impl ToolExecutionView {
     }
 
     /// Start a new execution.
-    pub fn start_execution(&mut self, name: impl Into<String>, description: impl Into<String>) -> &mut ToolExecution {
+    pub fn start_execution(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> &mut ToolExecution {
         let mut exec = ToolExecution::new(name, description);
         exec.start();
         self.add_execution(exec);
@@ -262,14 +266,21 @@ impl ToolExecutionView {
 
     /// Check if any tool is running.
     pub fn has_running(&self) -> bool {
-        self.executions.iter().any(|e| e.state == ToolState::Running)
+        self.executions
+            .iter()
+            .any(|e| e.state == ToolState::Running)
     }
 
     /// Get count of completed tools.
     pub fn completed_count(&self) -> usize {
         self.executions
             .iter()
-            .filter(|e| matches!(e.state, ToolState::Succeeded | ToolState::Failed | ToolState::Cancelled))
+            .filter(|e| {
+                matches!(
+                    e.state,
+                    ToolState::Succeeded | ToolState::Failed | ToolState::Cancelled
+                )
+            })
             .count()
     }
 
@@ -324,7 +335,7 @@ impl ToolExecutionView {
 
         let name = (self.theme.name)(&exec.name);
         let desc = (self.theme.description)(&exec.description);
-        
+
         let timing = if self.show_timing {
             let dur = exec.format_duration();
             if dur.is_empty() {
@@ -342,15 +353,21 @@ impl ToolExecutionView {
             String::new()
         };
 
-        let main_line = format!("{}{} {} - {}{}{}", indent, styled_icon, name, desc, timing, progress);
+        let main_line = format!(
+            "{}{} {} - {}{}{}",
+            indent, styled_icon, name, desc, timing, progress
+        );
         lines.push(truncate_line(&main_line, width));
 
         // Input parameters (if expanded and enabled)
         if self.show_input && !exec.input.is_empty() {
             for (key, value) in &exec.input {
-                let param = format!("{}  {}: {}", indent, 
+                let param = format!(
+                    "{}  {}: {}",
+                    indent,
                     (self.theme.parameter)(key),
-                    truncate_string(value, w.saturating_sub(key.len() + 4)));
+                    truncate_string(value, w.saturating_sub(key.len() + 4))
+                );
                 lines.push(param);
             }
         }
@@ -360,15 +377,18 @@ impl ToolExecutionView {
             if let Some(output) = &exec.output {
                 let output_lines: Vec<&str> = output.lines().collect();
                 let show_lines = output_lines.len().min(self.max_output_lines);
-                
+
                 for i in 0..show_lines {
                     let line = format!("{}  {}", indent, (self.theme.output)(output_lines[i]));
                     lines.push(truncate_line(&line, width));
                 }
-                
+
                 if output_lines.len() > self.max_output_lines {
-                    let more = format!("{}  ... ({} more lines)", indent, 
-                        output_lines.len() - self.max_output_lines);
+                    let more = format!(
+                        "{}  ... ({} more lines)",
+                        indent,
+                        output_lines.len() - self.max_output_lines
+                    );
                     lines.push((self.theme.description)(&more));
                 }
             }
@@ -404,18 +424,31 @@ impl Component for ToolExecutionView {
         }
 
         // Header
-        let running = self.executions.iter().filter(|e| e.state == ToolState::Running).count();
+        let running = self
+            .executions
+            .iter()
+            .filter(|e| e.state == ToolState::Running)
+            .count();
         let completed = self.completed_count();
         let total = self.executions.len();
 
         let header = if running > 0 {
-            format!("Tools: {}/{} running, {} completed", running, total, completed)
+            format!(
+                "Tools: {}/{} running, {} completed",
+                running, total, completed
+            )
         } else {
             format!("Tools: {}/{} completed", completed, total)
         };
-        lines.push((self.theme.border)(&format!("─{}", &"─".repeat(w.saturating_sub(1)))));
+        lines.push((self.theme.border)(&format!(
+            "─{}",
+            &"─".repeat(w.saturating_sub(1))
+        )));
         lines.push(format!(" {}", (self.theme.name)(&header)));
-        lines.push((self.theme.border)(&format!("─{}", &"─".repeat(w.saturating_sub(1)))));
+        lines.push((self.theme.border)(&format!(
+            "─{}",
+            &"─".repeat(w.saturating_sub(1))
+        )));
 
         // Executions
         for exec in &self.executions {
@@ -540,10 +573,10 @@ mod tests {
     fn test_tool_execution() {
         let mut exec = ToolExecution::new("read", "Read file contents");
         assert_eq!(exec.state, ToolState::Pending);
-        
+
         exec.start();
         assert_eq!(exec.state, ToolState::Running);
-        
+
         exec.complete("File contents here");
         assert_eq!(exec.state, ToolState::Succeeded);
         assert_eq!(exec.output.as_ref().unwrap(), "File contents here");
@@ -555,7 +588,7 @@ mod tests {
         let mut exec = ToolExecution::new("bash", "Run command");
         exec.start();
         exec.fail("Command not found");
-        
+
         assert_eq!(exec.state, ToolState::Failed);
         assert_eq!(exec.error.unwrap(), "Command not found");
     }
@@ -563,10 +596,10 @@ mod tests {
     #[test]
     fn test_tool_view() {
         let mut view = ToolExecutionView::new();
-        
+
         let exec = ToolExecution::new("grep", "Search files");
         view.add_execution(exec);
-        
+
         assert_eq!(view.executions().len(), 1);
         assert!(!view.has_running());
     }
@@ -575,7 +608,7 @@ mod tests {
     fn test_tool_spinner() {
         let mut spinner = ToolSpinner::new("Working...");
         assert_eq!(spinner.state, ToolState::Running);
-        
+
         spinner.success();
         assert_eq!(spinner.state, ToolState::Succeeded);
     }

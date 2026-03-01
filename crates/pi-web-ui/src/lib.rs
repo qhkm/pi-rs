@@ -32,12 +32,12 @@ impl WebSession {
     pub fn load(session_id: impl Into<String>) -> anyhow::Result<Self> {
         let session_id = session_id.into();
         let storage = storage::Storage::new(&session_id);
-        
+
         // Verify session exists
         if !storage.exists() {
             anyhow::bail!("Session '{}' not found", session_id);
         }
-        
+
         Ok(Self {
             storage,
             session_id,
@@ -62,7 +62,10 @@ impl WebSession {
     }
 
     /// Update session metadata
-    pub fn update_metadata(&mut self, metadata: &storage::types::SessionMetadata) -> anyhow::Result<()> {
+    pub fn update_metadata(
+        &mut self,
+        metadata: &storage::types::SessionMetadata,
+    ) -> anyhow::Result<()> {
         self.storage.save_metadata(metadata)
     }
 
@@ -75,13 +78,13 @@ impl WebSession {
     pub fn export_json(&self) -> anyhow::Result<String> {
         let messages = self.get_messages()?;
         let metadata = self.get_metadata()?;
-        
+
         let export = SessionExport {
             session_id: self.session_id.clone(),
             metadata,
             messages: messages.into_iter().map(|m| m.text_content()).collect(),
         };
-        
+
         Ok(serde_json::to_string_pretty(&export)?)
     }
 }

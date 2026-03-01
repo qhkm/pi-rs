@@ -81,12 +81,7 @@ impl HookRegistry {
     ///
     /// Multiple handlers can be registered for the same `(event, extension_name)`
     /// pair; they are all called in order of registration.
-    pub async fn register(
-        &self,
-        event: HookEvent,
-        extension_name: String,
-        handler: HookHandler,
-    ) {
+    pub async fn register(&self, event: HookEvent, extension_name: String, handler: HookHandler) {
         let mut guard = self.hooks.write().await;
         guard.push(HookEntry {
             event,
@@ -204,7 +199,9 @@ mod tests {
             )
             .await;
 
-        let results = registry.dispatch(&ctx(HookEvent::BeforeTurn, json!(null))).await;
+        let results = registry
+            .dispatch(&ctx(HookEvent::BeforeTurn, json!(null)))
+            .await;
 
         assert_eq!(results.len(), 1, "expected exactly one result");
         assert!(
@@ -266,7 +263,9 @@ mod tests {
             )
             .await;
 
-        let results = registry.dispatch(&ctx(HookEvent::AfterTurn, json!({}))).await;
+        let results = registry
+            .dispatch(&ctx(HookEvent::AfterTurn, json!({})))
+            .await;
 
         // Only the two AfterTurn handlers should have fired.
         assert_eq!(results.len(), 2);
@@ -298,11 +297,7 @@ mod tests {
                 "guard-ext".to_string(),
                 Box::new(|ctx| {
                     // Cancel only when the tool name matches "dangerous_tool".
-                    if ctx
-                        .data
-                        .get("tool")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
+                    if ctx.data.get("tool").and_then(Value::as_str).unwrap_or("")
                         == "dangerous_tool"
                     {
                         HookResult::Cancel
@@ -365,7 +360,11 @@ mod tests {
         let start_results = registry
             .dispatch(&ctx(HookEvent::SessionStart, json!(null)))
             .await;
-        assert_eq!(start_results.len(), 1, "only ext-to-keep's handler survives");
+        assert_eq!(
+            start_results.len(),
+            1,
+            "only ext-to-keep's handler survives"
+        );
         assert!(matches!(start_results[0], HookResult::Modified(_)));
 
         // SessionEnd has no handlers left.
@@ -435,11 +434,14 @@ mod tests {
         ]);
         match outcome {
             HookOutcome::Modified(v) => assert_eq!(v, json!(2)),
-            other => panic!("expected Modified, got {:?}", match other {
-                HookOutcome::Continue => "Continue",
-                HookOutcome::Cancelled => "Cancelled",
-                _ => "unknown",
-            }),
+            other => panic!(
+                "expected Modified, got {:?}",
+                match other {
+                    HookOutcome::Continue => "Continue",
+                    HookOutcome::Cancelled => "Cancelled",
+                    _ => "unknown",
+                }
+            ),
         }
     }
 

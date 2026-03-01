@@ -16,8 +16,10 @@ use crate::context::compaction::{
 };
 
 use crate::agent::events::{AgentEndReason, AgentEvent};
-use crate::agent::hooks::{HookContext, HookEvent, HookOutcome, HookRegistry, resolve_hook_results};
-use crate::agent::state::{AgentConfig, AgentSharedState, AgentState, default_thinking_budgets};
+use crate::agent::hooks::{
+    resolve_hook_results, HookContext, HookEvent, HookOutcome, HookRegistry,
+};
+use crate::agent::state::{default_thinking_budgets, AgentConfig, AgentSharedState, AgentState};
 use crate::context::budget::ContextUsage;
 use crate::error::{AgentError, Result};
 use crate::messages::{self, AgentMessage};
@@ -67,7 +69,7 @@ impl Agent {
         let (event_tx, _) = broadcast::channel(4096);
         let current_model = config.model.clone();
         let compaction_enabled = config.compaction.enabled;
-        
+
         // Initialize event log if path is configured
         let event_log = if let Some(ref path) = config.event_log_path {
             match std::fs::OpenOptions::new()
@@ -84,7 +86,7 @@ impl Agent {
         } else {
             None
         };
-        
+
         Self {
             config,
             shared: Arc::new(AgentSharedState::new_with_compaction(compaction_enabled)),
@@ -113,9 +115,7 @@ impl Agent {
     /// Returns whether auto-compaction is currently enabled.
     pub fn auto_compaction_enabled(&self) -> bool {
         use std::sync::atomic::Ordering;
-        self.shared
-            .auto_compaction_enabled
-            .load(Ordering::SeqCst)
+        self.shared.auto_compaction_enabled.load(Ordering::SeqCst)
     }
 
     /// Register a context transform that will be applied to the LLM-visible
@@ -377,7 +377,10 @@ impl Agent {
                         HookOutcome::Modified(_data) => {
                             // Extensions may attach metadata; currently no
                             // mutable turn-level state to override.
-                            tracing::debug!(turn_index, "BeforeTurn hook returned Modified (ignored for now)");
+                            tracing::debug!(
+                                turn_index,
+                                "BeforeTurn hook returned Modified (ignored for now)"
+                            );
                         }
                         HookOutcome::Continue => {}
                     }
@@ -439,7 +442,11 @@ impl Agent {
                 // Auto-compaction check -- read the runtime-mutable flag from shared state
                 // rather than the static AgentConfig so that SetAutoCompaction RPC commands
                 // take effect without rebuilding the agent.
-                if self.shared.auto_compaction_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                if self
+                    .shared
+                    .auto_compaction_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
                     let usage = self.context_usage().await;
                     let context_window = self.config.token_budget.context_window;
                     if should_compact(usage.total_tokens, context_window, &self.config.compaction) {
@@ -613,13 +620,16 @@ impl Agent {
 
         // Determine thinking level: dynamic selector takes precedence over static config
         let current_messages = self.messages.read().await;
-        let dynamic_level = self.config.thinking_budget_selector.as_ref()
+        let dynamic_level = self
+            .config
+            .thinking_budget_selector
+            .as_ref()
             .and_then(|selector| selector(&current_messages));
         drop(current_messages);
-        
+
         // Use dynamic level if provided, otherwise fall back to static config
         let effective_thinking_level = dynamic_level.or(self.config.thinking_level);
-        
+
         // Emit event if dynamic thinking level was selected
         if dynamic_level.is_some() {
             self.emit(AgentEvent::DynamicThinkingLevel {
@@ -627,15 +637,21 @@ impl Agent {
                 reason: "Dynamic adjustment based on context".to_string(),
             });
         }
-        
+
         // Resolve the per-request thinking budget from the config's budget table.
         // `resolved_thinking_budget()` returns None when no thinking level is set,
         // or Some(n) where n=0 means "provider maximum / no cap".
-        let thinking_budget = self.config.thinking_budgets.as_ref()
-            .and_then(|budgets| effective_thinking_level.and_then(|level| budgets.get(&level).copied()))
-            .or_else(|| effective_thinking_level.and_then(|level| {
-                default_thinking_budgets().get(&level).copied()
-            }));
+        let thinking_budget = self
+            .config
+            .thinking_budgets
+            .as_ref()
+            .and_then(|budgets| {
+                effective_thinking_level.and_then(|level| budgets.get(&level).copied())
+            })
+            .or_else(|| {
+                effective_thinking_level
+                    .and_then(|level| default_thinking_budgets().get(&level).copied())
+            });
 
         let options = SimpleStreamOptions {
             base: pi_ai::StreamOptions {
@@ -836,12 +852,13 @@ impl Agent {
 
         // Use streaming execution if enabled
         if self.config.streaming_tool_execution {
-            self.execute_tool_streaming(call_id, tool.as_ref(), arguments, &ctx).await
+            self.execute_tool_streaming(call_id, tool.as_ref(), arguments, &ctx)
+                .await
         } else {
             tool.execute(arguments.clone(), &ctx).await
         }
     }
-    
+
     /// Execute a tool with streaming progress updates.
     async fn execute_tool_streaming(
         &self,
@@ -851,16 +868,18 @@ impl Agent {
         ctx: &ToolContext,
     ) -> Result<AgentToolResult> {
         let (progress_tx, mut progress_rx) = mpsc::channel::<ToolProgress>(16);
-        
+
         // Spawn the streaming execution
         let args = arguments.clone();
         let tool_ref = tool.clone_boxed();
         let ctx_clone = ToolContext::new(ctx.cwd.clone()).with_abort(ctx.abort.clone());
-        
+
         let execution_handle = tokio::spawn(async move {
-            tool_ref.execute_streaming(args, &ctx_clone, progress_tx).await
+            tool_ref
+                .execute_streaming(args, &ctx_clone, progress_tx)
+                .await
         });
-        
+
         // Collect all progress updates until the channel closes
         while let Some(progress) = progress_rx.recv().await {
             match progress {
@@ -881,14 +900,14 @@ impl Agent {
                 }
             }
         }
-        
+
         // Now await the execution handle to get the final result
         let result = match execution_handle.await {
             Ok(Ok(tool_result)) => tool_result,
             Ok(Err(e)) => AgentToolResult::error(format!("Tool error: {e}")),
             Err(e) => AgentToolResult::error(format!("Execution failed: {e}")),
         };
-        
+
         Ok(result)
     }
 
@@ -1013,8 +1032,11 @@ impl Agent {
         drop(messages); // release read lock before the LLM call
 
         // Build compaction prompt
-        let (system_prompt, user_prompt) =
-            build_compaction_prompt(&conversation_text, previous_summary.as_deref(), custom_instructions);
+        let (system_prompt, user_prompt) = build_compaction_prompt(
+            &conversation_text,
+            previous_summary.as_deref(),
+            custom_instructions,
+        );
 
         // Call LLM for summarization using the non-streaming complete() method
         let summary_context =
@@ -1389,7 +1411,11 @@ mod tests {
         let ctx = agent.build_context().await;
 
         let order = call_order.lock().unwrap().clone();
-        assert_eq!(order, vec![1, 2, 3], "transforms must fire in registration order");
+        assert_eq!(
+            order,
+            vec![1, 2, 3],
+            "transforms must fire in registration order"
+        );
 
         let n = ctx.messages.len();
         assert!(n >= 3, "expected at least 3 messages");

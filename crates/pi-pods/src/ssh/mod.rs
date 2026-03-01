@@ -19,7 +19,25 @@ impl SshClient {
             anyhow::bail!("SSH connection string is empty");
         }
         // Reject shell meta-characters to prevent injection
-        if s.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '\'' | '"' | '(' | ')' | '{' | '}' | '<' | '>' | '\n' | '\r')) {
+        if s.chars().any(|c| {
+            matches!(
+                c,
+                ';' | '|'
+                    | '&'
+                    | '$'
+                    | '`'
+                    | '\''
+                    | '"'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | '\n'
+                    | '\r'
+            )
+        }) {
             anyhow::bail!("SSH connection string contains invalid characters");
         }
         Ok(Self {
@@ -31,8 +49,10 @@ impl SshClient {
     pub async fn exec(&self, command: &str) -> Result<String> {
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ConnectTimeout=10",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-o",
+                "ConnectTimeout=10",
                 &self.connection_string,
                 command,
             ])
@@ -56,7 +76,9 @@ impl SshClient {
 
     /// Detect GPUs on the remote host
     pub async fn detect_gpus(&self) -> Result<Vec<crate::config::Gpu>> {
-        let output = self.exec("nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader").await
+        let output = self
+            .exec("nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader")
+            .await
             .context("Failed to run nvidia-smi. Is CUDA installed?")?;
 
         let mut gpus = Vec::new();
@@ -82,7 +104,8 @@ impl SshClient {
     pub async fn interactive_shell(&self) -> Result<()> {
         let status = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 &self.connection_string,
             ])
             .status()
@@ -100,7 +123,8 @@ impl SshClient {
     pub async fn scp_upload(&self, local_path: &str, remote_path: &str) -> Result<()> {
         let status = Command::new("scp")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 local_path,
                 &format!("{}:{}", self.connection_string, remote_path),
             ])

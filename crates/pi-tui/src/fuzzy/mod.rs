@@ -27,7 +27,9 @@ impl PartialOrd for FuzzyMatch {
 impl Ord for FuzzyMatch {
     fn cmp(&self, other: &Self) -> Ordering {
         // Higher score first, then shorter text, then alphabetically
-        other.score.cmp(&self.score)
+        other
+            .score
+            .cmp(&self.score)
             .then_with(|| self.text.len().cmp(&other.text.len()))
             .then_with(|| self.text.cmp(&other.text))
     }
@@ -89,7 +91,7 @@ pub fn fuzzy_match(pattern: &str, text: &str, opts: &MatchOptions) -> Option<Fuz
     } else {
         pattern.to_lowercase().chars().collect()
     };
-    
+
     let text_chars: Vec<char> = if opts.case_sensitive {
         text.chars().collect()
     } else {
@@ -97,7 +99,10 @@ pub fn fuzzy_match(pattern: &str, text: &str, opts: &MatchOptions) -> Option<Fuz
     };
 
     // Simple case: exact substring match gets high score
-    if let Some(pos) = text_chars.windows(pattern_chars.len()).position(|w| w == &pattern_chars) {
+    if let Some(pos) = text_chars
+        .windows(pattern_chars.len())
+        .position(|w| w == &pattern_chars)
+    {
         let positions: Vec<usize> = (pos..pos + pattern_chars.len()).collect();
         let score = calculate_score(&positions, &text_chars, true);
         return Some(FuzzyMatch {
@@ -148,7 +153,7 @@ fn dp_fuzzy_match(
 ) -> Option<FuzzyMatch> {
     let p_len = pattern.len();
     let t_len = text.len();
-    
+
     if p_len > t_len {
         return None;
     }
@@ -169,7 +174,7 @@ fn dp_fuzzy_match(
         for j in 1..=t_len {
             // Option 1: Don't match pattern[i-1] to text[j-1]
             let skip = curr[j - 1];
-            
+
             // Option 2: Match pattern[i-1] to text[j-1]
             let mut take = i32::MIN / 2;
             if pattern[i - 1] == text[j - 1] {
@@ -183,7 +188,7 @@ fn dp_fuzzy_match(
                     } else {
                         take += 10 + bonus; // Base match + bonus
                     }
-                    
+
                     // Gap penalty
                     if i > 1 {
                         if let Some(prev_pos) = path[i - 1][j - 1] {
@@ -260,7 +265,7 @@ fn find_best_match(
 
     let remaining_pattern = pattern.len() - p_idx;
     let remaining_text = text.len() - t_idx;
-    
+
     if remaining_pattern > remaining_text {
         return;
     }
@@ -304,7 +309,7 @@ fn calculate_score(positions: &[usize], text: &[char], is_exact: bool) -> i32 {
     }
 
     let mut score = if is_exact { 100 } else { 0 };
-    
+
     // Bonus for starting at the beginning
     if positions[0] == 0 {
         score += 10;
@@ -314,7 +319,7 @@ fn calculate_score(positions: &[usize], text: &[char], is_exact: bool) -> i32 {
     for i in 0..positions.len() {
         let pos = positions[i];
         score += get_bonus(pos, text);
-        
+
         if i > 0 {
             let prev = positions[i - 1];
             if pos == prev + 1 {
@@ -336,11 +341,11 @@ fn get_bonus(pos: usize, text: &[char]) -> i32 {
     if pos == 0 {
         return 10; // Start of string
     }
-    
+
     if is_word_boundary(pos, text) {
         return 8; // Word boundary
     }
-    
+
     0
 }
 
@@ -349,20 +354,20 @@ fn is_word_boundary(pos: usize, text: &[char]) -> bool {
     if pos == 0 {
         return true;
     }
-    
+
     let prev = text[pos - 1];
     let curr = text[pos];
-    
+
     // After separator characters
     if matches!(prev, '/' | '\\' | '_' | '-' | '.' | ' ' | ':' | '@') {
         return true;
     }
-    
+
     // camelCase transition
     if prev.is_lowercase() && curr.is_uppercase() {
         return true;
     }
-    
+
     false
 }
 
@@ -374,7 +379,7 @@ pub fn fuzzy_filter(pattern: &str, candidates: &[String], opts: &MatchOptions) -
         .iter()
         .filter_map(|c| fuzzy_match(pattern, c, opts))
         .collect();
-    
+
     matches.sort();
     matches
 }
@@ -398,7 +403,7 @@ pub fn highlight_matches(
     let chars: Vec<char> = text.chars().collect();
     let mut result = String::new();
     let mut pos_set: std::collections::HashSet<usize> = positions.iter().copied().collect();
-    
+
     let mut i = 0;
     while i < chars.len() {
         if pos_set.contains(&i) {
@@ -414,7 +419,7 @@ pub fn highlight_matches(
             i += 1;
         }
     }
-    
+
     result
 }
 
@@ -425,7 +430,7 @@ pub fn prefix_match(pattern: &str, text: &str, case_sensitive: bool) -> Option<F
     } else {
         (pattern.to_lowercase(), text.to_lowercase())
     };
-    
+
     if t.starts_with(&p) {
         let positions: Vec<usize> = (0..pattern.len()).collect();
         Some(FuzzyMatch {
@@ -455,7 +460,7 @@ mod tests {
         // Positions depend on the matching algorithm (greedy vs optimal)
         assert_eq!(m.positions.len(), 3);
         assert_eq!(m.positions[0], 0); // First char matches at start
-        // The algorithm may find different but valid positions
+                                       // The algorithm may find different but valid positions
     }
 
     #[test]
@@ -477,7 +482,7 @@ mod tests {
             "Cargo.toml".to_string(),
             "README.md".to_string(),
         ];
-        
+
         let matches = fuzzy_filter("sr", &candidates, &Default::default());
         assert!(!matches.is_empty());
         assert!(matches.iter().any(|m| m.text.contains("src")));
@@ -496,7 +501,7 @@ mod tests {
         // Matching at word boundary should score higher
         let m1 = fuzzy_match("t", "test_file", &Default::default()).unwrap();
         let m2 = fuzzy_match("t", "_test", &Default::default()).unwrap();
-        
+
         // m2 should have higher score because 't' is at word boundary
         assert!(m2.score > m1.score || m2.positions[0] == 1);
     }

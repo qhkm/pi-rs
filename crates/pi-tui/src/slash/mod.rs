@@ -24,7 +24,7 @@ impl SlashCommand {
     /// Parse a command from input text.
     pub fn parse(input: &str) -> Option<Self> {
         let trimmed = input.trim();
-        
+
         if !trimmed.starts_with('/') {
             return None;
         }
@@ -165,7 +165,7 @@ impl SlashCommandRegistry {
     /// Get commands grouped by category.
     pub fn by_category(&self) -> HashMap<&str, Vec<&CommandDef>> {
         let mut groups: HashMap<&str, Vec<&CommandDef>> = HashMap::new();
-        
+
         for cmd in self.commands.values() {
             let category = match cmd.name.as_str() {
                 "clear" | "compact" | "undo" => "Session",
@@ -176,26 +176,20 @@ impl SlashCommandRegistry {
             };
             groups.entry(category).or_default().push(cmd);
         }
-        
+
         groups
     }
 
     fn register_defaults(&mut self) {
         // Session commands
-        self.register(
-            CommandDef::new("clear", "Clear the conversation history")
-                .with_alias("cls"),
-        );
+        self.register(CommandDef::new("clear", "Clear the conversation history").with_alias("cls"));
 
         self.register(
             CommandDef::new("compact", "Compact the conversation context")
                 .with_description("Summarize and truncate conversation to save tokens"),
         );
 
-        self.register(
-            CommandDef::new("undo", "Undo the last message")
-                .with_alias("back"),
-        );
+        self.register(CommandDef::new("undo", "Undo the last message").with_alias("back"));
 
         // Model commands
         self.register(
@@ -205,10 +199,7 @@ impl SlashCommandRegistry {
                 .with_args_required(true),
         );
 
-        self.register(
-            CommandDef::new("models", "List available models")
-                .with_alias("list-models"),
-        );
+        self.register(CommandDef::new("models", "List available models").with_alias("list-models"));
 
         self.register(
             CommandDef::new("thinking", "Set the thinking level")
@@ -223,10 +214,7 @@ impl SlashCommandRegistry {
                 .with_alias("prefs"),
         );
 
-        self.register(
-            CommandDef::new("tokens", "Show token usage statistics")
-                .with_alias("usage"),
-        );
+        self.register(CommandDef::new("tokens", "Show token usage statistics").with_alias("usage"));
 
         // Export/Import
         self.register(
@@ -257,8 +245,7 @@ impl SlashCommandRegistry {
         );
 
         self.register(
-            CommandDef::new("commands", "List all available commands")
-                .with_alias("cmds"),
+            CommandDef::new("commands", "List all available commands").with_alias("cmds"),
         );
 
         // System
@@ -268,10 +255,7 @@ impl SlashCommandRegistry {
                 .with_alias("q"),
         );
 
-        self.register(
-            CommandDef::new("version", "Show version information")
-                .with_alias("v"),
-        );
+        self.register(CommandDef::new("version", "Show version information").with_alias("v"));
 
         // Additional commands (new)
         self.register(
@@ -322,7 +306,10 @@ pub enum CommandResult {
     /// Command failed with error message
     Error(String),
     /// Command requires confirmation
-    Confirm { prompt: String, command: SlashCommand },
+    Confirm {
+        prompt: String,
+        command: SlashCommand,
+    },
     /// Command showed help/info
     Info(String),
 }
@@ -349,9 +336,13 @@ impl SimpleCommandHandler {
     /// Get help text for all commands.
     pub fn help_all(&self) -> String {
         let mut result = String::from("Available commands:\n\n");
-        
-        for category in ["Session", "Model", "Settings", "Export", "Help", "Debug", "Other"] {
-            let commands: Vec<&CommandDef> = self.registry.list()
+
+        for category in [
+            "Session", "Model", "Settings", "Export", "Help", "Debug", "Other",
+        ] {
+            let commands: Vec<&CommandDef> = self
+                .registry
+                .list()
                 .into_iter()
                 .filter(|c| {
                     let cat = match c.name.as_str() {
@@ -366,7 +357,7 @@ impl SimpleCommandHandler {
                     cat == category
                 })
                 .collect();
-            
+
             if !commands.is_empty() {
                 result.push_str(&format!("\x1b[1m{}:\x1b[0m\n", category));
                 for cmd in commands {
@@ -375,31 +366,41 @@ impl SimpleCommandHandler {
                 result.push('\n');
             }
         }
-        
+
         result
     }
 
     /// Get help for a specific command.
     pub fn help_command(&self, name: &str) -> String {
         if let Some(cmd) = self.registry.get(name) {
-            let mut result = format!("\x1b[1m/{}{}\x1b[0m\n", cmd.name,
-                if cmd.usage.is_empty() { String::new() } else { format!(" {}", cmd.usage) });
+            let mut result = format!(
+                "\x1b[1m/{}{}\x1b[0m\n",
+                cmd.name,
+                if cmd.usage.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", cmd.usage)
+                }
+            );
             result.push_str(&format!("\n{}\n", cmd.description));
-            
+
             if !cmd.arg_help.is_empty() {
                 result.push_str("\nArguments:\n");
                 for (arg, desc) in &cmd.arg_help {
                     result.push_str(&format!("  <{:<12}> {}\n", arg, desc));
                 }
             }
-            
+
             if !cmd.aliases.is_empty() {
                 result.push_str(&format!("\nAliases: {}\n", cmd.aliases.join(", ")));
             }
-            
+
             result
         } else {
-            format!("Unknown command: /{}\nType /help for a list of commands.", name)
+            format!(
+                "Unknown command: /{}\nType /help for a list of commands.",
+                name
+            )
         }
     }
 }
@@ -420,38 +421,27 @@ impl SlashCommandHandler for SimpleCommandHandler {
                     CommandResult::Info(self.help_all())
                 }
             }
-            "commands" | "cmds" => {
-                CommandResult::Info(self.help_all())
-            }
-            "clear" | "cls" => {
-                CommandResult::Success(Some("Conversation cleared.".to_string()))
-            }
-            "quit" | "exit" | "q" => {
-                CommandResult::Success(None)
-            }
+            "commands" | "cmds" => CommandResult::Info(self.help_all()),
+            "clear" | "cls" => CommandResult::Success(Some("Conversation cleared.".to_string())),
+            "quit" | "exit" | "q" => CommandResult::Success(None),
             "version" | "v" => {
                 CommandResult::Info(format!("pi-tui version {}", env!("CARGO_PKG_VERSION")))
             }
             "history" | "hist" => {
                 CommandResult::Success(Some("Showing conversation history...".to_string()))
             }
-            "fork" => {
-                CommandResult::Success(Some("Session forked.".to_string()))
-            }
-            "merge" => {
-                CommandResult::Success(Some("Session merged.".to_string()))
-            }
-            "debug" => {
-                CommandResult::Success(Some("Debug mode toggled.".to_string()))
-            }
-            "prompt" => {
-                CommandResult::Success(Some("System prompt updated.".to_string()))
-            }
+            "fork" => CommandResult::Success(Some("Session forked.".to_string())),
+            "merge" => CommandResult::Success(Some("Session merged.".to_string())),
+            "debug" => CommandResult::Success(Some("Debug mode toggled.".to_string())),
+            "prompt" => CommandResult::Success(Some("System prompt updated.".to_string())),
             _ => {
                 if self.registry.has(&cmd.name) {
                     CommandResult::Success(Some(format!("Command '{}' executed", cmd.name)))
                 } else {
-                    CommandResult::Error(format!("Unknown command: /{}\nType /help for a list of commands.", cmd.name))
+                    CommandResult::Error(format!(
+                        "Unknown command: /{}\nType /help for a list of commands.",
+                        cmd.name
+                    ))
                 }
             }
         }
@@ -470,8 +460,9 @@ pub fn complete_command(partial: &str, registry: &SlashCommandRegistry) -> Vec<S
     }
 
     let name = &partial[1..].to_lowercase();
-    
-    registry.list()
+
+    registry
+        .list()
         .into_iter()
         .filter(|cmd| cmd.name.starts_with(name))
         .map(|cmd| format!("/{}", cmd.name))
@@ -518,7 +509,7 @@ mod tests {
     #[test]
     fn test_registry() {
         let registry = SlashCommandRegistry::new();
-        
+
         assert!(registry.has("help"));
         assert!(registry.has("clear"));
         assert!(registry.has("model"));
@@ -531,10 +522,10 @@ mod tests {
     #[test]
     fn test_handler() {
         let mut handler = SimpleCommandHandler::new();
-        
+
         let cmd = SlashCommand::parse("/help").unwrap();
         let result = handler.handle(&cmd);
-        
+
         match result {
             CommandResult::Info(text) => {
                 assert!(text.contains("Available commands"));
@@ -546,10 +537,10 @@ mod tests {
     #[test]
     fn test_complete_command() {
         let registry = SlashCommandRegistry::new();
-        
+
         let completions = complete_command("/he", &registry);
         assert!(completions.iter().any(|c| c == "/help"));
-        
+
         let completions = complete_command("/mod", &registry);
         assert!(completions.iter().any(|c| c == "/model"));
     }

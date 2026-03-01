@@ -4,7 +4,7 @@ use pi_agent_core::context::compaction::{
     build_branch_summary_prompt, estimate_tokens_str, serialize_conversation,
     BranchSummarizationSettings,
 };
-use pi_agent_core::messages::{AgentMessage, to_llm_messages};
+use pi_agent_core::messages::{to_llm_messages, AgentMessage};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -123,8 +123,8 @@ impl SessionManager {
         // Acquire an exclusive advisory lock before committing the state
         // change.  This prevents a second SessionManager (in another process
         // or task) from opening the same file concurrently.
-        let lock = SessionLock::acquire_with_timeout(path, Self::LOCK_TIMEOUT)
-            .with_context(|| {
+        let lock =
+            SessionLock::acquire_with_timeout(path, Self::LOCK_TIMEOUT).with_context(|| {
                 format!(
                     "Could not acquire lock for session file '{}'. \
                      Another pi process may already have this session open.",
@@ -365,7 +365,7 @@ impl SessionManager {
                     .push(id.clone());
             }
         }
-        
+
         // Detect and report cycles
         let cycles = Self::detect_cycles(&parent_map);
         if !cycles.is_empty() {
@@ -420,14 +420,14 @@ impl SessionManager {
 
         Ok(nodes)
     }
-    
+
     /// Detect cycles in the parent map using DFS.
     /// Returns a list of cycles found, where each cycle is a list of entry IDs.
     fn detect_cycles(parent_map: &HashMap<String, Option<String>>) -> Vec<Vec<String>> {
         let mut cycles = Vec::new();
         let mut visited = std::collections::HashSet::new();
         let mut in_stack = std::collections::HashSet::new();
-        
+
         for node_id in parent_map.keys() {
             if !visited.contains(node_id) {
                 Self::dfs_detect_cycle(
@@ -440,10 +440,10 @@ impl SessionManager {
                 );
             }
         }
-        
+
         cycles
     }
-    
+
     fn dfs_detect_cycle(
         node_id: &str,
         parent_map: &HashMap<String, Option<String>>,
@@ -455,19 +455,14 @@ impl SessionManager {
         visited.insert(node_id.to_string());
         in_stack.insert(node_id.to_string());
         path.push(node_id.to_string());
-        
+
         // Follow the parent pointer (we traverse parent -> child, so check who has us as parent)
         for (child_id, parent_id) in parent_map.iter() {
             if let Some(pid) = parent_id {
                 if pid == node_id {
                     if !visited.contains(child_id) {
                         Self::dfs_detect_cycle(
-                            child_id,
-                            parent_map,
-                            visited,
-                            in_stack,
-                            path,
-                            cycles,
+                            child_id, parent_map, visited, in_stack, path, cycles,
                         );
                     } else if in_stack.contains(child_id) {
                         // Found a cycle - extract it from path
@@ -479,7 +474,7 @@ impl SessionManager {
                 }
             }
         }
-        
+
         path.pop();
         in_stack.remove(node_id);
     }
@@ -744,10 +739,7 @@ impl SessionManager {
             }
 
             if !found {
-                anyhow::bail!(
-                    "branch_entry_id '{}' not found in session",
-                    branch_entry_id
-                );
+                anyhow::bail!("branch_entry_id '{}' not found in session", branch_entry_id);
             }
 
             // Walk upward from branch_entry_id and check for cycles.
@@ -840,11 +832,14 @@ impl SessionManager {
 
         for entry in entries_to_merge {
             let old_id = entry.id().to_string();
-            let new_id = id_remap.get(&old_id).cloned().unwrap_or_else(|| Uuid::new_v4().to_string());
+            let new_id = id_remap
+                .get(&old_id)
+                .cloned()
+                .unwrap_or_else(|| Uuid::new_v4().to_string());
 
             // Remap the entry with new IDs
             let remapped_entry = self.remap_entry_ids(entry, &new_id, &previous_new_id, &id_remap);
-            
+
             self.append_entry(&remapped_entry).await?;
             previous_new_id = Some(new_id);
             count += 1;
@@ -864,13 +859,21 @@ impl SessionManager {
         use SessionEntry::*;
 
         match entry {
-            Message { message, timestamp, .. } => Message {
+            Message {
+                message, timestamp, ..
+            } => Message {
                 id: new_id.to_string(),
                 parent_id: new_parent_id.clone(),
                 timestamp,
                 message,
             },
-            Compaction { summary, first_kept_entry_id, tokens_before, timestamp, .. } => {
+            Compaction {
+                summary,
+                first_kept_entry_id,
+                tokens_before,
+                timestamp,
+                ..
+            } => {
                 // Remap the first_kept_entry_id if it was in the merged session
                 let remapped_first_kept = id_remap.get(&first_kept_entry_id).cloned();
                 Compaction {
@@ -882,26 +885,41 @@ impl SessionManager {
                     tokens_before,
                 }
             }
-            ModelChange { model, provider, timestamp, .. } => ModelChange {
+            ModelChange {
+                model,
+                provider,
+                timestamp,
+                ..
+            } => ModelChange {
                 id: new_id.to_string(),
                 parent_id: new_parent_id.clone(),
                 timestamp,
                 model,
                 provider,
             },
-            ThinkingLevelChange { level, timestamp, .. } => ThinkingLevelChange {
+            ThinkingLevelChange {
+                level, timestamp, ..
+            } => ThinkingLevelChange {
                 id: new_id.to_string(),
                 parent_id: new_parent_id.clone(),
                 timestamp,
                 level,
             },
-            Label { label, timestamp, .. } => Label {
+            Label {
+                label, timestamp, ..
+            } => Label {
                 id: new_id.to_string(),
                 parent_id: new_parent_id.clone(),
                 timestamp,
                 label,
             },
-            BranchSummary { branch_entry_id, summary, tokens_before, timestamp, .. } => {
+            BranchSummary {
+                branch_entry_id,
+                summary,
+                tokens_before,
+                timestamp,
+                ..
+            } => {
                 // Remap the branch_entry_id if it was in the merged session
                 let remapped_branch = id_remap.get(&branch_entry_id).cloned();
                 BranchSummary {
@@ -982,10 +1000,7 @@ impl SessionManager {
             }
         };
 
-        let version = header
-            .get("version")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let version = header.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
         if version >= 3 {
             return Ok(false); // Already at current version
@@ -1026,7 +1041,8 @@ impl SessionManager {
 
         // Track seen IDs to detect collisions during migration
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut id_remap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut id_remap: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         // ------------------------------------------------------------------
         // Migrate entries
@@ -1076,7 +1092,10 @@ impl SessionManager {
             if version < 2 || entry.get("id").is_none() {
                 // v0/v1 -> v2: Ensure all entries have an 'id' field
                 if let Some(obj) = entry.as_object_mut() {
-                    let old_id = obj.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let old_id = obj
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
 
                     // Check for ID collision
                     if let Some(ref id) = old_id {
@@ -1096,7 +1115,7 @@ impl SessionManager {
                             serde_json::json!(Uuid::new_v4().to_string()),
                         );
                     }
-                    
+
                     // Ensure 'type' field exists
                     if !obj.contains_key("type") {
                         // Infer type from structure or default to message
@@ -1144,7 +1163,7 @@ impl SessionManager {
                     if !obj.contains_key("parent_id") {
                         obj.insert("parent_id".to_string(), serde_json::Value::Null);
                     }
-                    
+
                     // Remap parent_id if it points to a remapped ID
                     if let Some(parent_id) = obj.get("parent_id").and_then(|v| v.as_str()) {
                         if let Some(new_id) = id_remap.get(parent_id) {
@@ -1363,8 +1382,8 @@ impl SessionManager {
         // re-using a manager for multiple successive sessions does not
         // deadlock on itself.
         self.active_lock = None; // release previous lock if any
-        let lock = SessionLock::acquire_with_timeout(&path, Self::LOCK_TIMEOUT)
-            .with_context(|| {
+        let lock =
+            SessionLock::acquire_with_timeout(&path, Self::LOCK_TIMEOUT).with_context(|| {
                 format!(
                     "Could not acquire lock for new session file '{}'.",
                     path.display()
@@ -1994,8 +2013,7 @@ mod tests {
             .filter(|l| !l.trim().is_empty())
             .last()
             .expect("last line");
-        let last_entry: SessionEntry =
-            serde_json::from_str(last_line).expect("parse last entry");
+        let last_entry: SessionEntry = serde_json::from_str(last_line).expect("parse last entry");
         match last_entry {
             SessionEntry::Message { parent_id, .. } => {
                 assert_eq!(parent_id.as_deref(), Some(id3.as_str()));
@@ -2056,8 +2074,7 @@ mod tests {
             .filter(|l| !l.trim().is_empty())
             .last()
             .expect("last line");
-        let last_entry: SessionEntry =
-            serde_json::from_str(last_line).expect("parse last entry");
+        let last_entry: SessionEntry = serde_json::from_str(last_line).expect("parse last entry");
         match last_entry {
             SessionEntry::Message { parent_id, .. } => {
                 assert_eq!(parent_id.as_deref(), Some(id2.as_str()));
@@ -2234,7 +2251,11 @@ mod tests {
             .await
             .expect("collect_messages_up_to");
 
-        assert_eq!(messages.len(), 2, "should return exactly 2 messages (root to id2)");
+        assert_eq!(
+            messages.len(),
+            2,
+            "should return exactly 2 messages (root to id2)"
+        );
 
         let texts: Vec<String> = messages
             .iter()
@@ -2257,9 +2278,18 @@ mod tests {
             .await
             .expect("build_branch_summary_prompts");
 
-        assert!(sys.contains("branch point"), "system prompt should be branch-specific");
-        assert!(user.contains("second message"), "user prompt must embed the messages");
-        assert!(user.contains("<conversation>"), "must have conversation tags");
+        assert!(
+            sys.contains("branch point"),
+            "system prompt should be branch-specific"
+        );
+        assert!(
+            user.contains("second message"),
+            "user prompt must embed the messages"
+        );
+        assert!(
+            user.contains("<conversation>"),
+            "must have conversation tags"
+        );
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2340,11 +2370,14 @@ mod tests {
             .expect("session created");
 
         let id1 = manager
-            .append_message(AgentMessage::from_llm(Message::user("refactor auth module")))
+            .append_message(AgentMessage::from_llm(Message::user(
+                "refactor auth module",
+            )))
             .await
             .expect("first message");
 
-        let summary_text = "## Goal\nRefactor auth module\n\n## Files Modified\n- modified: src/auth.rs";
+        let summary_text =
+            "## Goal\nRefactor auth module\n\n## Files Modified\n- modified: src/auth.rs";
         let summary_id = manager
             .append_branch_summary(&id1, summary_text.to_string(), 512)
             .await
@@ -2438,13 +2471,22 @@ mod tests {
         let dir = temp_dir("merge-basic");
         fs::create_dir_all(&dir).expect("create temp dir");
         let mut manager = SessionManager::new(dir.clone());
-        
+
         // Create target session with 2 messages
-        manager.create_session("/tmp/target").await.expect("target session created");
-        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-msg-1"))).await.expect("t1");
-        let t2 = manager.append_message(AgentMessage::from_llm(Message::user("target-msg-2"))).await.expect("t2");
+        manager
+            .create_session("/tmp/target")
+            .await
+            .expect("target session created");
+        let _t1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-msg-1")))
+            .await
+            .expect("t1");
+        let t2 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-msg-2")))
+            .await
+            .expect("t2");
         let target_path = manager.session_path().unwrap().to_path_buf();
-        
+
         // Create source session file manually
         let source_path = dir.join("source.jsonl");
         let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
@@ -2467,15 +2509,15 @@ mod tests {
             serde_json::to_string(&s2).unwrap()
         );
         fs::write(&source_path, source_content).expect("write source");
-        
+
         // Merge source into target
         let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
         assert_eq!(merged_count, 2, "should merge 2 entries");
-        
+
         // Verify merged entries are chained from t2
         let lines = read_lines(&target_path).await;
         assert_eq!(lines.len(), 5, "header + 2 target + 2 merged = 5 lines");
-        
+
         // Last entry should be a message with parent_id pointing to t2
         let last_entry = parse_entry(lines.last().unwrap());
         match last_entry {
@@ -2485,7 +2527,7 @@ mod tests {
             }
             _ => panic!("expected message entry"),
         }
-        
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2494,13 +2536,16 @@ mod tests {
         let dir = temp_dir("merge-no-session");
         fs::create_dir_all(&dir).expect("create temp dir");
         let mut manager = SessionManager::new(dir.clone());
-        
+
         let source_path = dir.join("source.jsonl");
         fs::write(&source_path, "{}\n").expect("write source");
-        
-        let err = manager.merge(&source_path).await.expect_err("should fail without session");
+
+        let err = manager
+            .merge(&source_path)
+            .await
+            .expect_err("should fail without session");
         assert!(err.to_string().contains("No active session"));
-        
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2509,22 +2554,29 @@ mod tests {
         let dir = temp_dir("merge-empty");
         fs::create_dir_all(&dir).expect("create temp dir");
         let mut manager = SessionManager::new(dir.clone());
-        
-        manager.create_session("/tmp/target").await.expect("target session created");
+
+        manager
+            .create_session("/tmp/target")
+            .await
+            .expect("target session created");
         let target_path = manager.session_path().unwrap().to_path_buf();
-        
+
         // Create empty source
         let source_path = dir.join("source.jsonl");
         let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
-        fs::write(&source_path, format!("{}\n", serde_json::to_string(&source_header).unwrap())).expect("write source");
-        
+        fs::write(
+            &source_path,
+            format!("{}\n", serde_json::to_string(&source_header).unwrap()),
+        )
+        .expect("write source");
+
         let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
         assert_eq!(merged_count, 0, "should merge 0 entries from empty source");
-        
+
         // Target should still only have header
         let lines = read_lines(&target_path).await;
         assert_eq!(lines.len(), 1, "only header line");
-        
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2533,22 +2585,37 @@ mod tests {
         let dir = temp_dir("merge-branched");
         fs::create_dir_all(&dir).expect("create temp dir");
         let mut manager = SessionManager::new(dir.clone());
-        
+
         // Create target session with branches
-        manager.create_session("/tmp/target").await.expect("target session created");
-        let t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
-        let t2 = manager.append_message(AgentMessage::from_llm(Message::user("target-2"))).await.expect("t2");
-        
+        manager
+            .create_session("/tmp/target")
+            .await
+            .expect("target session created");
+        let t1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-1")))
+            .await
+            .expect("t1");
+        let t2 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-2")))
+            .await
+            .expect("t2");
+
         // Create a branch from t1
         manager.branch(&t1);
-        let t3 = manager.append_message(AgentMessage::from_llm(Message::user("target-3-branched"))).await.expect("t3");
-        
+        let t3 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-3-branched")))
+            .await
+            .expect("t3");
+
         // Switch back to main line
         manager.branch(&t2);
-        let t4 = manager.append_message(AgentMessage::from_llm(Message::user("target-4"))).await.expect("t4");
-        
+        let t4 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-4")))
+            .await
+            .expect("t4");
+
         let target_path = manager.session_path().unwrap().to_path_buf();
-        
+
         // Create source session with its own branches
         let source_path = dir.join("source.jsonl");
         let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
@@ -2587,11 +2654,11 @@ mod tests {
             serde_json::to_string(&s4).unwrap()
         );
         fs::write(&source_path, source_content).expect("write source");
-        
+
         // Merge source into target
         let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
         assert_eq!(merged_count, 4, "should merge 4 entries");
-        
+
         // Verify tree integrity - no duplicate IDs
         let tree = manager.get_tree().await.expect("get tree");
         let mut ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -2602,7 +2669,7 @@ mod tests {
                 node.entry_id
             );
         }
-        
+
         // Verify parent chains are intact
         for node in &tree {
             if let Some(ref parent_id) = node.parent_id {
@@ -2614,7 +2681,7 @@ mod tests {
                 );
             }
         }
-        
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2623,16 +2690,22 @@ mod tests {
         let dir = temp_dir("merge-collisions");
         fs::create_dir_all(&dir).expect("create temp dir");
         let mut manager = SessionManager::new(dir.clone());
-        
+
         // Create target session
-        manager.create_session("/tmp/target").await.expect("target session created");
-        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        manager
+            .create_session("/tmp/target")
+            .await
+            .expect("target session created");
+        let _t1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-1")))
+            .await
+            .expect("t1");
         let target_path = manager.session_path().unwrap().to_path_buf();
-        
+
         // Create source session with IDs that might collide format-wise
         let source_path = dir.join("source.jsonl");
         let source_header = SessionHeader::new("source-id".to_string(), "/tmp/source".to_string());
-        
+
         // Use IDs that look like UUIDs (similar to what target uses)
         let colliding_id = "550e8400-e29b-41d4-a716-446655440000";
         let s1 = SessionEntry::Message {
@@ -2654,11 +2727,11 @@ mod tests {
             serde_json::to_string(&s2).unwrap()
         );
         fs::write(&source_path, source_content).expect("write source");
-        
+
         // Merge source into target
         let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
         assert_eq!(merged_count, 2, "should merge 2 entries");
-        
+
         // Verify no ID collisions in the merged session
         let tree = manager.get_tree().await.expect("get tree");
         let mut ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -2669,13 +2742,13 @@ mod tests {
                 node.entry_id
             );
         }
-        
+
         // Verify the original collision IDs are NOT present (they should be remapped)
         assert!(
             !ids.contains(colliding_id),
             "Colliding ID should have been remapped"
         );
-        
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2684,31 +2757,49 @@ mod tests {
         let dir = temp_dir("merge-forked");
         fs::create_dir_all(&dir).expect("create temp dir");
         let mut manager = SessionManager::new(dir.clone());
-        
+
         // Create target session
-        manager.create_session("/tmp/target").await.expect("target session created");
-        let _t1 = manager.append_message(AgentMessage::from_llm(Message::user("target-1"))).await.expect("t1");
+        manager
+            .create_session("/tmp/target")
+            .await
+            .expect("target session created");
+        let _t1 = manager
+            .append_message(AgentMessage::from_llm(Message::user("target-1")))
+            .await
+            .expect("t1");
         let target_path = manager.session_path().unwrap().to_path_buf();
-        
+
         // Create forked source: fork from an entry, then add to both
         let mut source_manager = SessionManager::new(dir.join("source"));
-        source_manager.create_session("/tmp/source").await.expect("source session created");
-        let s1 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-1"))).await.expect("s1");
-        let _s2 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-2"))).await.expect("s2");
-        
+        source_manager
+            .create_session("/tmp/source")
+            .await
+            .expect("source session created");
+        let s1 = source_manager
+            .append_message(AgentMessage::from_llm(Message::user("source-1")))
+            .await
+            .expect("s1");
+        let _s2 = source_manager
+            .append_message(AgentMessage::from_llm(Message::user("source-2")))
+            .await
+            .expect("s2");
+
         // Fork from s1 and add entry to the fork
         source_manager.branch(&s1);
-        let _s3 = source_manager.append_message(AgentMessage::from_llm(Message::user("source-3-fork"))).await.expect("s3");
-        
+        let _s3 = source_manager
+            .append_message(AgentMessage::from_llm(Message::user("source-3-fork")))
+            .await
+            .expect("s3");
+
         let source_path = source_manager.session_path().unwrap().to_path_buf();
-        
+
         // Merge forked source into target
         let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
         assert_eq!(merged_count, 3, "should merge 3 entries");
-        
+
         // Verify tree structure is preserved
         let tree = manager.get_tree().await.expect("get tree");
-        
+
         // Find entries that have the fork structure
         let mut found_branched = false;
         for node in &tree {
@@ -2725,10 +2816,13 @@ mod tests {
                 }
             }
         }
-        
+
         // The fork structure should be preserved (at least one branched entry)
-        assert!(found_branched, "Fork structure should be preserved in merged session");
-        
+        assert!(
+            found_branched,
+            "Fork structure should be preserved in merged session"
+        );
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2745,22 +2839,26 @@ mod tests {
         let dir = temp_dir("migrate-v1");
         fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("v1-session.jsonl");
-        
+
         // Create a v1-style session (minimal header, no version field)
-        let v1_header = r#"{"type":"session","id":"v1-test","cwd":"/tmp","timestamp":"2024-01-01T00:00:00Z"}"#;
-        let v1_entry = r#"{"type":"message","id":"m1","message":{"role":"user","content":"hello"}}"#;
+        let v1_header =
+            r#"{"type":"session","id":"v1-test","cwd":"/tmp","timestamp":"2024-01-01T00:00:00Z"}"#;
+        let v1_entry =
+            r#"{"type":"message","id":"m1","message":{"role":"user","content":"hello"}}"#;
         fs::write(&path, format!("{}\n{}\n", v1_header, v1_entry)).expect("write v1 session");
-        
+
         // Migrate
-        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        let migrated = SessionManager::migrate_session(&path)
+            .await
+            .expect("migrate succeeded");
         assert!(migrated, "should have performed migration");
-        
+
         // Verify upgrade
         let content = fs::read_to_string(&path).expect("read migrated");
         let lines: Vec<&str> = content.lines().collect();
         let header: serde_json::Value = serde_json::from_str(lines[0]).expect("parse header");
         assert_eq!(header.get("version").unwrap().as_u64(), Some(3));
-        
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2769,15 +2867,21 @@ mod tests {
         let dir = temp_dir("migrate-current");
         fs::create_dir_all(&dir).expect("create temp dir");
         let path = dir.join("v3-session.jsonl");
-        
+
         // Create a v3 session
         let header = SessionHeader::new("v3-test".to_string(), "/tmp".to_string());
-        fs::write(&path, format!("{}\n", serde_json::to_string(&header).unwrap())).expect("write v3 session");
-        
+        fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&header).unwrap()),
+        )
+        .expect("write v3 session");
+
         // Try to migrate
-        let migrated = SessionManager::migrate_session(&path).await.expect("check succeeded");
+        let migrated = SessionManager::migrate_session(&path)
+            .await
+            .expect("check succeeded");
         assert!(!migrated, "should not migrate already-current version");
-        
+
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2793,13 +2897,18 @@ mod tests {
         fs::write(&path, format!("{}\n{}\n", v2_header, v2_entry_no_ts)).expect("write v2 session");
 
         // Migrate
-        SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        SessionManager::migrate_session(&path)
+            .await
+            .expect("migrate succeeded");
 
         // Verify entry now has timestamp
         let content = fs::read_to_string(&path).expect("read migrated");
         let lines: Vec<&str> = content.lines().collect();
         let entry: serde_json::Value = serde_json::from_str(lines[1]).expect("parse entry");
-        assert!(entry.get("timestamp").is_some(), "entry should now have timestamp");
+        assert!(
+            entry.get("timestamp").is_some(),
+            "entry should now have timestamp"
+        );
 
         fs::remove_dir_all(dir).ok();
     }
@@ -2856,11 +2965,11 @@ mod tests {
         fs::write(&source_path, source_content).expect("write source");
 
         // Merge source into target.
-        let merged_count = manager
-            .merge(&source_path)
-            .await
-            .expect("merge succeeded");
-        assert_eq!(merged_count, 2, "should merge 2 entries (msg + branch summary)");
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
+        assert_eq!(
+            merged_count, 2,
+            "should merge 2 entries (msg + branch summary)"
+        );
 
         // Read back target and collect all entry IDs.
         let lines = read_lines(&target_path).await;
@@ -2970,10 +3079,7 @@ mod tests {
         fs::write(&source_path, source_content).expect("write source");
 
         // Merge source into target.
-        let merged_count = manager
-            .merge(&source_path)
-            .await
-            .expect("merge succeeded");
+        let merged_count = manager.merge(&source_path).await.expect("merge succeeded");
         assert_eq!(merged_count, 2);
 
         // Read all entries and collect IDs.
@@ -3249,14 +3355,12 @@ mod tests {
         let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
 
         // Header should now have version 3 and type "session"
-        let header: serde_json::Value =
-            serde_json::from_str(lines[0]).expect("valid header json");
+        let header: serde_json::Value = serde_json::from_str(lines[0]).expect("valid header json");
         assert_eq!(header["version"], 3);
         assert_eq!(header["type"], "session");
 
         // Entry should now have type "message" (v0 default)
-        let entry: serde_json::Value =
-            serde_json::from_str(lines[1]).expect("valid entry json");
+        let entry: serde_json::Value = serde_json::from_str(lines[1]).expect("valid entry json");
         assert_eq!(entry["type"], "message");
         // Must also have parent_id and timestamp
         assert!(entry.get("parent_id").is_some());
@@ -3284,8 +3388,7 @@ mod tests {
 
         let data = fs::read_to_string(&path).expect("read migrated");
         let entry_line = data.lines().nth(1).expect("entry line");
-        let entry: serde_json::Value =
-            serde_json::from_str(entry_line).expect("valid json");
+        let entry: serde_json::Value = serde_json::from_str(entry_line).expect("valid json");
 
         // The custom_data field must be preserved
         assert_eq!(entry["custom_data"], "preserve_me");
@@ -3378,8 +3481,7 @@ this-is-not-json
 
         let data = fs::read_to_string(&path).expect("read migrated");
         let entry_line = data.lines().nth(1).expect("entry line");
-        let entry: serde_json::Value =
-            serde_json::from_str(entry_line).expect("valid json");
+        let entry: serde_json::Value = serde_json::from_str(entry_line).expect("valid json");
 
         // The timestamp should have been extracted from created_at
         let ts = entry["timestamp"].as_str().expect("timestamp string");
@@ -3411,8 +3513,7 @@ this-is-not-json
 
         let data = fs::read_to_string(&path).expect("read migrated");
         let entry_line = data.lines().nth(1).expect("entry line");
-        let entry: serde_json::Value =
-            serde_json::from_str(entry_line).expect("valid json");
+        let entry: serde_json::Value = serde_json::from_str(entry_line).expect("valid json");
 
         // The timestamp should have been taken from the header
         let ts = entry["timestamp"].as_str().expect("timestamp string");
@@ -3467,13 +3568,11 @@ this-is-not-json
         let data = fs::read_to_string(&path).expect("read migrated");
         let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
 
-        let header: serde_json::Value =
-            serde_json::from_str(lines[0]).expect("valid header json");
+        let header: serde_json::Value = serde_json::from_str(lines[0]).expect("valid header json");
         assert_eq!(header["version"], 3);
 
         // Entry should have gotten type "message" (v0 default) + id + parent_id + timestamp
-        let entry: serde_json::Value =
-            serde_json::from_str(lines[1]).expect("valid entry json");
+        let entry: serde_json::Value = serde_json::from_str(lines[1]).expect("valid entry json");
         assert_eq!(entry["type"], "message");
         assert!(entry.get("id").is_some());
         assert!(entry.get("parent_id").is_some());
@@ -3508,10 +3607,7 @@ this-is-not-json
 
         // Invalid date string
         let mut map4 = serde_json::Map::new();
-        map4.insert(
-            "created_at".to_string(),
-            serde_json::json!("not-a-date"),
-        );
+        map4.insert("created_at".to_string(), serde_json::json!("not-a-date"));
         let ts4 = SessionManager::extract_existing_timestamp(&map4);
         assert!(ts4.is_none());
     }
@@ -3573,8 +3669,14 @@ this-is-not-json
 
         // Create target session
         let mut target_manager = SessionManager::new(dir.clone());
-        target_manager.create_session("/tmp/target").await.expect("create target");
-        let _t1 = target_manager.append_message(AgentMessage::from_llm(Message::user("Target 1"))).await.expect("t1");
+        target_manager
+            .create_session("/tmp/target")
+            .await
+            .expect("create target");
+        let _t1 = target_manager
+            .append_message(AgentMessage::from_llm(Message::user("Target 1")))
+            .await
+            .expect("t1");
 
         // Create source with a simple chain
         let source_path = dir.join("source.jsonl");
@@ -3591,12 +3693,16 @@ this-is-not-json
             timestamp: Utc::now(),
             message: AgentMessage::from_llm(Message::user("Source 2")),
         };
-        fs::write(&source_path, format!(
-            "{}\n{}\n{}\n",
-            serde_json::to_string(&header).unwrap(),
-            serde_json::to_string(&s1).unwrap(),
-            serde_json::to_string(&s2).unwrap()
-        )).expect("write source");
+        fs::write(
+            &source_path,
+            format!(
+                "{}\n{}\n{}\n",
+                serde_json::to_string(&header).unwrap(),
+                serde_json::to_string(&s1).unwrap(),
+                serde_json::to_string(&s2).unwrap()
+            ),
+        )
+        .expect("write source");
 
         // Merge
         let merged = target_manager.merge(&source_path).await.expect("merge");
@@ -3663,11 +3769,15 @@ this-is-not-json
         // Create a v1 session with duplicate IDs
         let v1_header = r#"{"type":"session","version":1,"id":"test","cwd":"/tmp"}"#;
         let entry1 = r#"{"type":"message","id":"dup","message":{"role":"user","content":"first"}}"#;
-        let entry2 = r#"{"type":"message","id":"dup","message":{"role":"user","content":"second"}}"#;
-        fs::write(&path, format!("{}\n{}\n{}\n", v1_header, entry1, entry2)).expect("write session");
+        let entry2 =
+            r#"{"type":"message","id":"dup","message":{"role":"user","content":"second"}}"#;
+        fs::write(&path, format!("{}\n{}\n{}\n", v1_header, entry1, entry2))
+            .expect("write session");
 
         // Migrate
-        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        let migrated = SessionManager::migrate_session(&path)
+            .await
+            .expect("migrate succeeded");
         assert!(migrated, "should have performed migration");
 
         // Verify no duplicate IDs in migrated file
@@ -3700,16 +3810,20 @@ this-is-not-json
         // Create a session with corrupted header (extra text before/after JSON)
         let corrupt_header = r#"XXX{"type":"session","version":1,"id":"test","cwd":"/tmp","timestamp":"2024-01-01T00:00:00Z"}YYY"#;
         let entry = r#"{"type":"message","id":"m1","message":{"role":"user","content":"hello"}}"#;
-        fs::write(&path, format!("{}\n{}\n", corrupt_header, entry)).expect("write corrupt session");
+        fs::write(&path, format!("{}\n{}\n", corrupt_header, entry))
+            .expect("write corrupt session");
 
         // Migrate should repair and succeed
-        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        let migrated = SessionManager::migrate_session(&path)
+            .await
+            .expect("migrate succeeded");
         assert!(migrated, "should have performed migration after repair");
 
         // Verify the file is now valid
         let content = fs::read_to_string(&path).expect("read migrated");
         let lines: Vec<&str> = content.lines().collect();
-        let header: serde_json::Value = serde_json::from_str(lines[0]).expect("parse repaired header");
+        let header: serde_json::Value =
+            serde_json::from_str(lines[0]).expect("parse repaired header");
         assert_eq!(header.get("version").unwrap().as_u64(), Some(3));
 
         fs::remove_dir_all(dir).ok();
@@ -3725,16 +3839,23 @@ this-is-not-json
         let header = r#"{"type":"session","version":2,"id":"test","cwd":"/tmp"}"#;
         let valid_entry = r#"{"type":"message","id":"m1","parent_id":null,"timestamp":"2024-01-01T00:00:00Z","message":{"role":"user","content":"valid"}}"#;
         let malformed_entry = r#"{this is not valid json"#;
-        fs::write(&path, format!("{}\n{}\n{}\n", header, valid_entry, malformed_entry)).expect("write session");
+        fs::write(
+            &path,
+            format!("{}\n{}\n{}\n", header, valid_entry, malformed_entry),
+        )
+        .expect("write session");
 
         // Migrate
-        let migrated = SessionManager::migrate_session(&path).await.expect("migrate succeeded");
+        let migrated = SessionManager::migrate_session(&path)
+            .await
+            .expect("migrate succeeded");
         assert!(migrated, "should have performed migration");
 
         // Verify malformed entry is marked
         let content = fs::read_to_string(&path).expect("read migrated");
         let lines: Vec<&str> = content.lines().collect();
-        let malformed_parsed: serde_json::Value = serde_json::from_str(lines[2]).expect("parse marked entry");
+        let malformed_parsed: serde_json::Value =
+            serde_json::from_str(lines[2]).expect("parse marked entry");
         assert!(
             malformed_parsed.get("_malformed").is_some(),
             "Malformed entry should be marked with _malformed flag"

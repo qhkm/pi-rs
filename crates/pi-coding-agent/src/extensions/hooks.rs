@@ -5,8 +5,8 @@
 //! `pi-coding-agent` continues to compile without changes.
 
 pub use pi_agent_core::{
-    HookContext, HookEvent, HookHandler, HookOutcome, HookRegistry, HookResult,
-    resolve_hook_results,
+    resolve_hook_results, HookContext, HookEvent, HookHandler, HookOutcome, HookRegistry,
+    HookResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -68,10 +68,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_hook_results_cancel_takes_precedence() {
-        let results = vec![
-            HookResult::Modified(json!("ignored")),
-            HookResult::Cancel,
-        ];
+        let results = vec![HookResult::Modified(json!("ignored")), HookResult::Cancel];
         let outcome = resolve_hook_results(results);
         assert!(matches!(outcome, HookOutcome::Cancelled));
     }

@@ -65,7 +65,7 @@ mod tests {
         let manager = StateManager::new();
         let channel = manager.get_channel("C123");
         assert_eq!(channel.id, "C123");
-        
+
         let channels = manager.list_channels();
         assert_eq!(channels.len(), 1);
         assert_eq!(channels[0], "C123");

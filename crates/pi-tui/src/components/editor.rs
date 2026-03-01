@@ -100,10 +100,7 @@ impl Editor {
 
     pub fn with_language(mut self, language: impl Into<String>) -> Self {
         let lang = language.into();
-        self.syntax = self
-            .syntax_set
-            .find_syntax_by_token(&lang)
-            .cloned();
+        self.syntax = self.syntax_set.find_syntax_by_token(&lang).cloned();
         self.language = lang;
         self
     }
@@ -485,8 +482,7 @@ impl Component for Editor {
                                 continue;
                             }
 
-                            let cw =
-                                unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
 
                             // Insert cursor marker
                             if self.focused
@@ -501,10 +497,8 @@ impl Component for Editor {
                             }
 
                             let fg = style.foreground;
-                            rendered.push_str(&format!(
-                                "\x1b[38;2;{};{};{}m{}",
-                                fg.r, fg.g, fg.b, ch
-                            ));
+                            rendered
+                                .push_str(&format!("\x1b[38;2;{};{};{}m{}", fg.r, fg.g, fg.b, ch));
                             col_width += cw;
                             byte_offset += ch.len_utf8();
                             span_byte_pos += ch.len_utf8();

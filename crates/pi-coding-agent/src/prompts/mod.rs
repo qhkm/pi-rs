@@ -332,10 +332,7 @@ mod tests {
             template.description.as_deref(),
             Some("Greet someone warmly")
         );
-        assert_eq!(
-            template.body,
-            "Hello, {{name}}! Welcome to {{place}}."
-        );
+        assert_eq!(template.body, "Hello, {{name}}! Welcome to {{place}}.");
         assert_eq!(template.variables, vec!["name", "place"]);
         assert_eq!(template.path, path);
     }

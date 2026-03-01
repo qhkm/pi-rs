@@ -58,8 +58,7 @@ fn parse_skill_file(path: &Path) -> Option<Skill> {
                 if let Some(val) = line.strip_prefix("name:") {
                     name = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
                 } else if let Some(val) = line.strip_prefix("description:") {
-                    description =
-                        val.trim().trim_matches('"').trim_matches('\'').to_string();
+                    description = val.trim().trim_matches('"').trim_matches('\'').to_string();
                 } else if let Some(val) = line.strip_prefix("command:") {
                     command = val.trim().trim_matches('"').trim_matches('\'').to_string();
                 }

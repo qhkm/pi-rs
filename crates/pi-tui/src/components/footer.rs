@@ -71,7 +71,7 @@ impl Footer {
     pub fn set_item(&mut self, label: impl Into<String>, value: impl Into<String>) {
         let label = label.into();
         let value = value.into();
-        
+
         if let Some(pos) = self.items.iter().position(|(l, _)| l == &label) {
             self.items[pos].1 = value;
         } else {
@@ -135,7 +135,7 @@ impl Component for Footer {
             let label_styled = (self.theme.label_style)(label);
             let value_styled = (self.theme.value_style)(value);
             let sep_styled = (self.theme.separator_style)(sep);
-            
+
             let item_text = format!("{} {}: {}", sep_styled, label_styled, value_styled);
             let item_visual = format!("{}{}: {}", sep, label, value);
             let item_width = item_visual.width();
@@ -220,7 +220,7 @@ mod tests {
         let mut footer = Footer::new();
         footer.set_item("Tokens", "1000");
         footer.set_item("Model", "gpt-4");
-        
+
         let lines = footer.render(50);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("Tokens"));
@@ -236,7 +236,7 @@ mod tests {
         footer.set_cost(0.0234, "$");
         footer.set_model("claude-3-opus");
         footer.set_thinking("High");
-        
+
         let lines = footer.render(80);
         assert!(lines[0].contains("500"));
         assert!(lines[0].contains("claude-3-opus"));
@@ -248,7 +248,7 @@ mod tests {
         let s = "Hello World";
         assert_eq!(truncate_visible(s, 5), "Hello");
         assert_eq!(truncate_visible(s, 8), "Hello Wo");
-        
+
         // With ANSI codes - preserves opening codes
         let ansi = "\x1b[31mHello\x1b[0m World";
         let truncated = truncate_visible(ansi, 3);

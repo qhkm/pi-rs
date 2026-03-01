@@ -94,11 +94,11 @@ impl WasmModule {
         // Enable epoch interruption for I/O timeout enforcement
         engine_config.epoch_interruption(true);
 
-        let engine = wasmtime::Engine::new(&engine_config)
-            .context("Failed to create WASM engine")?;
+        let engine =
+            wasmtime::Engine::new(&engine_config).context("Failed to create WASM engine")?;
 
-        let module = wasmtime::Module::new(&engine, bytes)
-            .context("Failed to compile WASM module")?;
+        let module =
+            wasmtime::Module::new(&engine, bytes).context("Failed to compile WASM module")?;
 
         Ok(Self {
             engine,
@@ -139,10 +139,8 @@ impl WasmModule {
 
         // Wrap the entire execution in a wall-clock timeout to guard against
         // blocking I/O on inherited stdio.
-        let result = tokio::time::timeout(timeout_duration, async {
-            self.execute_inner(args).await
-        })
-        .await;
+        let result =
+            tokio::time::timeout(timeout_duration, async { self.execute_inner(args).await }).await;
 
         match result {
             Ok(inner) => inner,
@@ -157,8 +155,8 @@ impl WasmModule {
     /// wall-clock timeout.
     #[cfg(feature = "wasm")]
     async fn execute_inner(&self, args: serde_json::Value) -> Result<serde_json::Value> {
-        use wasmtime::{Store, TypedFunc};
         use std::time::Instant;
+        use wasmtime::{Store, TypedFunc};
 
         // Create WASI context. When disabled, use an empty context and avoid
         // wiring WASI imports into the linker below.
@@ -180,8 +178,7 @@ impl WasmModule {
         // Set up fuel for instruction counting (1 fuel ~ 1 wasm instruction)
         let mut store = Store::new(&self.engine, state);
         let max_fuel = self.config.timeout_secs.saturating_mul(100_000_000);
-        store.add_fuel(max_fuel)
-            .context("Failed to add fuel")?;
+        store.add_fuel(max_fuel).context("Failed to add fuel")?;
 
         // Enforce max_memory_mb: the limiter lives inside StoreState and is
         // handed back to wasmtime on every memory.grow / table.grow call.
@@ -198,7 +195,8 @@ impl WasmModule {
         }
 
         // Instantiate the module
-        let instance = linker.instantiate(&mut store, &self.module)
+        let instance = linker
+            .instantiate(&mut store, &self.module)
             .context("Failed to instantiate WASM module")?;
 
         // Get the execute function
@@ -213,8 +211,11 @@ impl WasmModule {
         // Enforce input size limits (max 1MB)
         const MAX_INPUT_SIZE: usize = 1024 * 1024;
         if input_bytes.len() > MAX_INPUT_SIZE {
-            anyhow::bail!("Input too large: {} bytes (max {})",
-                input_bytes.len(), MAX_INPUT_SIZE);
+            anyhow::bail!(
+                "Input too large: {} bytes (max {})",
+                input_bytes.len(),
+                MAX_INPUT_SIZE
+            );
         }
 
         // Get memory export
@@ -227,24 +228,40 @@ impl WasmModule {
         let alloc_offset = self.config.memory_alloc_offset.max(64); // Ensure at least 64 bytes offset
 
         // Try to use malloc export if available, otherwise use fixed offset
-        let input_ptr: i32 = if let Some(allocate) = instance.get_typed_func::<i32, i32>(&mut store, "malloc").ok() {
-            let ptr = allocate.call(&mut store, input_bytes.len() as i32)
+        let input_ptr: i32 = if let Some(allocate) = instance
+            .get_typed_func::<i32, i32>(&mut store, "malloc")
+            .ok()
+        {
+            let ptr = allocate
+                .call(&mut store, input_bytes.len() as i32)
                 .context("WASM malloc failed")?;
             // Validate allocated pointer
             if ptr < alloc_offset {
-                anyhow::bail!("WASM malloc returned invalid pointer: {} (must be >= {})", ptr, alloc_offset);
+                anyhow::bail!(
+                    "WASM malloc returned invalid pointer: {} (must be >= {})",
+                    ptr,
+                    alloc_offset
+                );
             }
             if ptr as usize + input_bytes.len() > memory_size {
-                anyhow::bail!("WASM malloc returned out-of-bounds pointer: {} + {} > {}",
-                    ptr, input_bytes.len(), memory_size);
+                anyhow::bail!(
+                    "WASM malloc returned out-of-bounds pointer: {} + {} > {}",
+                    ptr,
+                    input_bytes.len(),
+                    memory_size
+                );
             }
             ptr
         } else {
             // Fixed offset allocation with bounds checking
             let ptr = alloc_offset;
             if ptr as usize + input_bytes.len() > memory_size {
-                anyhow::bail!("Input too large for WASM memory: {} bytes needed at offset {}, {} available",
-                    input_bytes.len(), ptr, memory_size.saturating_sub(ptr as usize));
+                anyhow::bail!(
+                    "Input too large for WASM memory: {} bytes needed at offset {}, {} available",
+                    input_bytes.len(),
+                    ptr,
+                    memory_size.saturating_sub(ptr as usize)
+                );
             }
             ptr
         };
@@ -254,7 +271,8 @@ impl WasmModule {
             anyhow::bail!("WASM pointer not properly aligned: {}", input_ptr);
         }
 
-        memory.write(&mut store, input_ptr as usize, input_bytes)
+        memory
+            .write(&mut store, input_ptr as usize, input_bytes)
             .context("Failed to write input to WASM memory")?;
 
         // Track I/O operations and execution time
@@ -263,13 +281,17 @@ impl WasmModule {
         let mut io_op_count = 0u32;
 
         // Call execute
-        let (output_ptr,) = execute.call(&mut store, (input_ptr, input_bytes.len() as i32))
+        let (output_ptr,) = execute
+            .call(&mut store, (input_ptr, input_bytes.len() as i32))
             .context("WASM execution failed")?;
 
         // Validate output pointer
         if output_ptr < alloc_offset && output_ptr != 0 {
-            anyhow::bail!("WASM returned invalid output pointer: {} (must be >= {} or null)",
-                output_ptr, alloc_offset);
+            anyhow::bail!(
+                "WASM returned invalid output pointer: {} (must be >= {} or null)",
+                output_ptr,
+                alloc_offset
+            );
         }
 
         // Read output from memory with bounds checking
@@ -293,11 +315,14 @@ impl WasmModule {
                 }
 
                 if offset >= memory_size {
-                    return Err(anyhow::anyhow!("WASM output not null-terminated within memory bounds"));
+                    return Err(anyhow::anyhow!(
+                        "WASM output not null-terminated within memory bounds"
+                    ));
                 }
 
                 let mut byte = [0u8; 1];
-                memory.read(&store, offset, &mut byte)
+                memory
+                    .read(&store, offset, &mut byte)
                     .context("Failed to read output from WASM memory")?;
                 if byte[0] == 0 {
                     break;
@@ -307,7 +332,10 @@ impl WasmModule {
                 io_op_count += 1;
 
                 if io_op_count > max_io_ops {
-                    return Err(anyhow::anyhow!("WASM exceeded maximum I/O operations: {}", max_io_ops));
+                    return Err(anyhow::anyhow!(
+                        "WASM exceeded maximum I/O operations: {}",
+                        max_io_ops
+                    ));
                 }
             }
         }
@@ -320,10 +348,10 @@ impl WasmModule {
             io_op_count
         );
 
-        let output_str = String::from_utf8(output_bytes)
-            .context("WASM output is not valid UTF-8")?;
-        let output_json: serde_json::Value = serde_json::from_str(&output_str)
-            .context("WASM output is not valid JSON")?;
+        let output_str =
+            String::from_utf8(output_bytes).context("WASM output is not valid UTF-8")?;
+        let output_json: serde_json::Value =
+            serde_json::from_str(&output_str).context("WASM output is not valid JSON")?;
 
         Ok(output_json)
     }
@@ -520,30 +548,54 @@ mod tests {
         assert!(config.max_io_ops > 0, "max_io_ops must be positive");
 
         // Max output should be > 0
-        assert!(config.max_output_bytes > 0, "max_output_bytes must be positive");
+        assert!(
+            config.max_output_bytes > 0,
+            "max_output_bytes must be positive"
+        );
 
         // Memory allocation offset should be >= 64 for safety
-        assert!(config.memory_alloc_offset >= 64, "memory_alloc_offset should be at least 64 bytes");
+        assert!(
+            config.memory_alloc_offset >= 64,
+            "memory_alloc_offset should be at least 64 bytes"
+        );
 
         // Timeout should be reasonable (1-3600 seconds)
-        assert!(config.timeout_secs >= 1, "timeout should be at least 1 second");
-        assert!(config.timeout_secs <= 3600, "timeout should be at most 1 hour");
+        assert!(
+            config.timeout_secs >= 1,
+            "timeout should be at least 1 second"
+        );
+        assert!(
+            config.timeout_secs <= 3600,
+            "timeout should be at most 1 hour"
+        );
 
         // Stack depth should be reasonable (100-10000)
-        assert!(config.max_stack_depth >= 100, "max_stack_depth should be at least 100");
-        assert!(config.max_stack_depth <= 10000, "max_stack_depth should be at most 10000");
+        assert!(
+            config.max_stack_depth >= 100,
+            "max_stack_depth should be at least 100"
+        );
+        assert!(
+            config.max_stack_depth <= 10000,
+            "max_stack_depth should be at most 10000"
+        );
 
         // Memory should be reasonable (1-1024 MB)
-        assert!(config.max_memory_mb >= 1, "max_memory_mb should be at least 1");
-        assert!(config.max_memory_mb <= 1024, "max_memory_mb should be at most 1024");
+        assert!(
+            config.max_memory_mb >= 1,
+            "max_memory_mb should be at least 1"
+        );
+        assert!(
+            config.max_memory_mb <= 1024,
+            "max_memory_mb should be at most 1024"
+        );
     }
 
     #[test]
     fn test_wasm_input_size_limit() {
         // Test that we can create configs with different input handling
         let strict_config = WasmConfig {
-            max_memory_mb: 16, // Small memory
-            max_io_ops: 100,   // Low I/O
+            max_memory_mb: 16,      // Small memory
+            max_io_ops: 100,        // Low I/O
             max_output_bytes: 1024, // Small output
             ..WasmConfig::default()
         };
@@ -571,7 +623,10 @@ mod tests {
             ..WasmConfig::default()
         };
         let module = WasmModule::compile(&wasm, config);
-        assert!(module.is_ok(), "compilation with safety config should succeed");
+        assert!(
+            module.is_ok(),
+            "compilation with safety config should succeed"
+        );
     }
 
     #[cfg(feature = "wasm")]
@@ -600,9 +655,7 @@ mod tests {
     #[cfg(feature = "wasm")]
     #[test]
     fn test_memory_limiter_allows_table_growth() {
-        let mut limiter = MemoryLimiter {
-            max_memory: 1024,
-        };
+        let mut limiter = MemoryLimiter { max_memory: 1024 };
         assert!(limiter.table_growing(0, 100, None).expect("no error"));
     }
 

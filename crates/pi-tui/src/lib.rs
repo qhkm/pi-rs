@@ -37,7 +37,7 @@ pub use components::{
     DiffTheme, DiffViewMode, Editor, Focusable, Footer, FooterTheme, Input, InputResult, Loader,
     Markdown, ModelInfo, ModelSelector, QuickActionSelector, SelectItem, SelectList, Spacer,
     StreamingMessage, StreamingMessageList, StreamingState, StreamingTheme, Text, ThinkingLevel,
-    ThinkingSelector, ToolExecution, ToolExecutionView, ToolExecutionTheme, ToolSpinner, ToolState,
+    ThinkingSelector, ToolExecution, ToolExecutionTheme, ToolExecutionView, ToolSpinner, ToolState,
     TruncatedText, TuiBox, CURSOR_MARKER,
 };
 
@@ -57,21 +57,19 @@ pub use keyboard::kitty::{matches_key, parse_input, Key, KeyEvent, KeyEventType,
 pub use fuzzy::{fuzzy_filter, fuzzy_match, highlight_matches, FuzzyMatch, MatchOptions};
 
 pub use theme::{
-    dark_theme, high_contrast_theme, light_theme, Color, ComponentTheme, Style, Theme,
-    ThemeError, ThemeManager,
+    dark_theme, high_contrast_theme, light_theme, Color, ComponentTheme, Style, Theme, ThemeError,
+    ThemeManager,
 };
 
 pub use slash::{
-    complete_command, CommandDef, SlashCommandHandler, CommandResult, SimpleCommandHandler,
-    SlashCommand, SlashCommandRegistry,
+    complete_command, CommandDef, CommandResult, SimpleCommandHandler, SlashCommand,
+    SlashCommandHandler, SlashCommandRegistry,
 };
 
 // Image rendering protocols
-pub use image::{
-    ImageProtocolRenderer, ImageRenderer, TerminalProtocol,
-};
 pub use image::iterm2::{is_iterm2_terminal, Iterm2Renderer};
 pub use image::kitty::{is_kitty_terminal, KittyRenderer};
+pub use image::{ImageProtocolRenderer, ImageRenderer, TerminalProtocol};
 
 // App framework
 pub use app::{App, AppContext, AppResult, FocusArea, LayoutApp};

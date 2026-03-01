@@ -438,11 +438,8 @@ mod tests {
 
     #[test]
     fn test_build_compaction_prompt_with_custom_instructions() {
-        let (sys, user) = build_compaction_prompt(
-            "some conversation",
-            None,
-            Some("Focus on errors"),
-        );
+        let (sys, user) =
+            build_compaction_prompt("some conversation", None, Some("Focus on errors"));
         assert!(sys.contains("conversation summarizer"));
         assert!(
             sys.contains("Focus on errors"),

@@ -83,7 +83,10 @@ async fn branch_merge_export_workflow() {
     drop(primary);
 
     let mut loader = SessionManager::new(dir.clone());
-    let messages = loader.load_session(&primary_path).await.expect("load messages");
+    let messages = loader
+        .load_session(&primary_path)
+        .await
+        .expect("load messages");
 
     let export_path = dir.join("export.html");
     let result_path = export_to_html(&messages, Some(export_path.as_path()), Some("Test Export"))
@@ -217,7 +220,10 @@ async fn large_session_merge_stress() {
         .await
         .expect("target root");
 
-    let merged = target.merge(&source_path).await.expect("merge large session");
+    let merged = target
+        .merge(&source_path)
+        .await
+        .expect("merge large session");
     assert_eq!(merged, entry_count);
 
     // Verify merged tree integrity
@@ -225,7 +231,8 @@ async fn large_session_merge_stress() {
     assert_eq!(merged_tree.len(), entry_count + 1); // source entries + 1 target root
 
     // Verify all IDs are unique
-    let ids: std::collections::HashSet<String> = merged_tree.iter().map(|n| n.entry_id.clone()).collect();
+    let ids: std::collections::HashSet<String> =
+        merged_tree.iter().map(|n| n.entry_id.clone()).collect();
     assert_eq!(ids.len(), merged_tree.len(), "all IDs must be unique");
 
     let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -240,10 +247,7 @@ async fn merge_two_forks_into_same_target() {
 
     // Fork A
     let mut fork_a = SessionManager::new(dir.clone());
-    fork_a
-        .create_session("/tmp/work")
-        .await
-        .expect("fork A");
+    fork_a.create_session("/tmp/work").await.expect("fork A");
     for i in 0..5 {
         fork_a
             .append_message(AgentMessage::from_llm(Message::user(format!("fork-A-{i}"))))
@@ -254,10 +258,7 @@ async fn merge_two_forks_into_same_target() {
 
     // Fork B
     let mut fork_b = SessionManager::new(dir.clone());
-    fork_b
-        .create_session("/tmp/work")
-        .await
-        .expect("fork B");
+    fork_b.create_session("/tmp/work").await.expect("fork B");
     for i in 0..3 {
         fork_b
             .append_message(AgentMessage::from_llm(Message::user(format!("fork-B-{i}"))))
@@ -268,10 +269,7 @@ async fn merge_two_forks_into_same_target() {
 
     // Target
     let mut target = SessionManager::new(dir.clone());
-    target
-        .create_session("/tmp/work")
-        .await
-        .expect("target");
+    target.create_session("/tmp/work").await.expect("target");
     target
         .append_message(AgentMessage::from_llm(Message::user("target-root")))
         .await

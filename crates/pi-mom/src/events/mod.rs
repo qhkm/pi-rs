@@ -29,10 +29,9 @@ impl EventProcessor {
         let channel_state = self.state_manager.get_channel(&ctx.channel);
 
         // Add user message to conversation
-        let user_message =
-            pi_agent_core::messages::AgentMessage::from_llm(pi_ai::Message::user(
-                event.text.clone(),
-            ));
+        let user_message = pi_agent_core::messages::AgentMessage::from_llm(pi_ai::Message::user(
+            event.text.clone(),
+        ));
         channel_state.add_message(user_message)?;
 
         // Send the user's text to the agent and get the assistant response

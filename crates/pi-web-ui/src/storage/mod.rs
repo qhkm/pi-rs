@@ -75,7 +75,7 @@ impl Storage {
     /// Load session data
     fn load_data(&self) -> Result<SessionData> {
         let path = self.storage_path();
-        
+
         if !path.exists() {
             return self.init_session();
         }
@@ -152,12 +152,10 @@ impl Storage {
         let messages: Vec<Message> = data
             .messages
             .into_iter()
-            .map(|m| {
-                match m.role.as_str() {
-                    "user" => Message::user(m.content),
-                    "assistant" => Message::user(format!("[{}] {}", m.role, m.content)),
-                    _ => Message::user(format!("[{}] {}", m.role, m.content)),
-                }
+            .map(|m| match m.role.as_str() {
+                "user" => Message::user(m.content),
+                "assistant" => Message::user(format!("[{}] {}", m.role, m.content)),
+                _ => Message::user(format!("[{}] {}", m.role, m.content)),
             })
             .collect();
 
@@ -205,7 +203,7 @@ impl Storage {
         for entry in std::fs::read_dir(sessions_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.extension().and_then(|e| e.to_str()) == Some("json") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(data) = serde_json::from_str::<SessionData>(&content) {
@@ -217,7 +215,7 @@ impl Storage {
 
         // Sort by last modified, newest first
         sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
-        
+
         Ok(sessions)
     }
 

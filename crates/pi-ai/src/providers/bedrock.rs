@@ -79,12 +79,17 @@ impl BedrockProvider {
         let region = std::env::var("AWS_REGION")
             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
             .ok()?;
-        
+
         let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
         let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
         let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
 
-        Some(Self::new(region, access_key_id, secret_access_key, session_token))
+        Some(Self::new(
+            region,
+            access_key_id,
+            secret_access_key,
+            session_token,
+        ))
     }
 
     /// Sign a request using AWS SigV4.
@@ -111,7 +116,10 @@ impl BedrockProvider {
         let date_stamp = now.format("%Y%m%d").to_string();
 
         // Add required headers
-        headers.insert("host".to_string(), format!("bedrock-runtime.{}.amazonaws.com", self.region));
+        headers.insert(
+            "host".to_string(),
+            format!("bedrock-runtime.{}.amazonaws.com", self.region),
+        );
         headers.insert("x-amz-date".to_string(), amz_date.clone());
         if let Some(ref token) = params.session_token {
             headers.insert("x-amz-security-token".to_string(), token.clone());
@@ -152,7 +160,10 @@ impl BedrockProvider {
         );
 
         // Create string to sign
-        let credential_scope = format!("{}/{}/{}/aws4_request", date_stamp, params.region, params.service);
+        let credential_scope = format!(
+            "{}/{}/{}/aws4_request",
+            date_stamp, params.region, params.service
+        );
         let string_to_sign = format!(
             "AWS4-HMAC-SHA256\n{}\n{}\n{}",
             amz_date,
@@ -162,7 +173,7 @@ impl BedrockProvider {
 
         // Calculate signature
         type HmacSha256 = Hmac<Sha256>;
-        
+
         let k_secret = format!("AWS4{}", params.secret_key);
         let mut mac = HmacSha256::new_from_slice(k_secret.as_bytes())
             .map_err(|e| PiAiError::Auth(format!("HMAC error: {}", e)))?;
@@ -203,8 +214,11 @@ impl BedrockProvider {
     fn get_model_id(&self, model: &Model) -> String {
         // Bedrock model IDs are in the format: anthropic.claude-3-sonnet-20240229-v1:0
         // The model.id might be our internal ID, so we need to map it
-        if model.id.starts_with("anthropic.") || model.id.starts_with("amazon.") 
-            || model.id.starts_with("meta.") || model.id.starts_with("mistral.") {
+        if model.id.starts_with("anthropic.")
+            || model.id.starts_with("amazon.")
+            || model.id.starts_with("meta.")
+            || model.id.starts_with("mistral.")
+        {
             model.id.clone()
         } else {
             // Default to Claude Sonnet if we don't have a direct mapping
@@ -230,9 +244,7 @@ fn build_bedrock_messages(messages: &[Message]) -> Vec<Value> {
                         let parts: Vec<Value> = blocks
                             .iter()
                             .filter_map(|c| match c {
-                                Content::Text { text, .. } => {
-                                    Some(json!({"text": text}))
-                                }
+                                Content::Text { text, .. } => Some(json!({"text": text})),
                                 Content::Image { data, mime_type } => Some(json!({
                                     "image": {
                                         "format": image_mime_to_format(mime_type),
@@ -254,7 +266,7 @@ fn build_bedrock_messages(messages: &[Message]) -> Vec<Value> {
             }
             Message::Assistant(am) => {
                 let mut content_parts: Vec<Value> = Vec::new();
-                
+
                 // Add text content
                 let text: String = am
                     .content
@@ -267,14 +279,20 @@ fn build_bedrock_messages(messages: &[Message]) -> Vec<Value> {
                         }
                     })
                     .collect();
-                
+
                 if !text.is_empty() {
                     content_parts.push(json!({"text": text}));
                 }
 
                 // Add tool calls
                 for c in &am.content {
-                    if let Content::ToolCall { id, name, arguments, .. } = c {
+                    if let Content::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } = c
+                    {
                         content_parts.push(json!({
                             "toolUse": {
                                 "toolUseId": id,
@@ -373,7 +391,9 @@ fn map_stop_reason(reason: &str) -> StopReason {
 ///
 /// Returns `Ok(Some((event_type, payload, bytes_consumed)))` on success,
 /// `Ok(None)` if not enough bytes yet, or `Err` on CRC mismatch.
-fn parse_event_stream_frame(buf: &[u8]) -> std::result::Result<Option<(String, Vec<u8>, usize)>, String> {
+fn parse_event_stream_frame(
+    buf: &[u8],
+) -> std::result::Result<Option<(String, Vec<u8>, usize)>, String> {
     if buf.len() < 12 {
         return Ok(None); // need at least the prelude
     }
@@ -433,7 +453,9 @@ fn parse_event_stream_frame(buf: &[u8]) -> std::result::Result<Option<(String, V
 ///
 /// Header format: name_len(u8) + name(name_len bytes) + type(u8) + value_len(u16 BE) + value
 /// We only handle type 7 (string) headers, which is what Bedrock uses.
-fn parse_event_stream_headers(mut buf: &[u8]) -> std::result::Result<HashMap<String, String>, String> {
+fn parse_event_stream_headers(
+    mut buf: &[u8],
+) -> std::result::Result<HashMap<String, String>, String> {
     let mut headers = HashMap::new();
 
     while !buf.is_empty() {
@@ -475,20 +497,21 @@ fn parse_event_stream_headers(mut buf: &[u8]) -> std::result::Result<HashMap<Str
         } else {
             // Skip non-string headers by reading past their value
             let skip = match header_type {
-                0 | 1 => 0,          // bool true/false: no value bytes
-                2 | 3 => 1,          // u8/i8
-                4 => 2,              // i16
-                5 => 4,              // i32
-                6 => 8,              // i64
-                8 => {               // bytes: u16-prefixed
+                0 | 1 => 0, // bool true/false: no value bytes
+                2 | 3 => 1, // u8/i8
+                4 => 2,     // i16
+                5 => 4,     // i32
+                6 => 8,     // i64
+                8 => {
+                    // bytes: u16-prefixed
                     if buf.len() < 2 {
                         return Err("Header value truncated".to_string());
                     }
                     let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
                     len + 2
                 }
-                9 => 8,              // timestamp (i64)
-                10 => 16,            // UUID (16 bytes)
+                9 => 8,   // timestamp (i64)
+                10 => 16, // UUID (16 bytes)
                 _ => return Err(format!("Unknown header type: {header_type}")),
             };
             if buf.len() < skip {
@@ -607,9 +630,9 @@ impl LLMProvider for BedrockProvider {
     ) -> Result<()> {
         let model_id = self.get_model_id(model);
         let uri = format!("/model/{}/converse-stream", model_id);
-        
+
         let messages = build_bedrock_messages(&context.messages);
-        
+
         // Prepend system prompt if provided
         let mut system = None;
         if let Some(sp) = &context.system_prompt {
@@ -642,10 +665,7 @@ impl LLMProvider for BedrockProvider {
         let signed_headers = self.sign_request("POST", &uri, &mut headers, &payload)?;
 
         // Build the request
-        let mut req_builder = self
-            .client
-            .post(&url)
-            .body(payload);
+        let mut req_builder = self.client.post(&url).body(payload);
 
         for (k, v) in signed_headers {
             req_builder = req_builder.header(k, v);
@@ -721,13 +741,8 @@ impl BedrockProvider {
                                 if let Ok(event) =
                                     serde_json::from_slice::<BedrockStreamEvent>(&payload)
                                 {
-                                    handle_bedrock_event(
-                                        event,
-                                        &mut blocks,
-                                        &mut partial,
-                                        &tx,
-                                    )
-                                    .await;
+                                    handle_bedrock_event(event, &mut blocks, &mut partial, &tx)
+                                        .await;
                                 } else {
                                     debug!(
                                         "Failed to parse Bedrock binary payload: {}",

@@ -16,22 +16,25 @@ use serde_json::Value;
 /// tokenizer (e.g., tiktoken for OpenAI, Claude tokenizer for Anthropic).
 pub fn estimate_tool_tokens(schema: &Value) -> u64 {
     let base_cost = 20u64;
-    
+
     // Serialize and count characters
     let json_str = match serde_json::to_string(schema) {
         Ok(s) => s,
         Err(_) => return base_cost, // Fallback
     };
-    
+
     // Characters / 4 heuristic, with a minimum for small schemas
     let content_tokens = (json_str.len() as u64).saturating_div(4);
-    
+
     base_cost + content_tokens
 }
 
 /// Estimate tokens for multiple tool definitions.
 pub fn estimate_tools_tokens(tools: &[pi_ai::ToolDefinition]) -> u64 {
-    tools.iter().map(|t| estimate_tool_tokens(&t.parameters)).sum()
+    tools
+        .iter()
+        .map(|t| estimate_tool_tokens(&t.parameters))
+        .sum()
 }
 
 /// Estimate tokens for a system prompt.
@@ -56,7 +59,7 @@ pub fn calculate_context_tokens(
     let system_tokens = system_prompt.map(estimate_system_tokens).unwrap_or(0);
     let message_tokens: u64 = messages.iter().map(crate::messages::estimate_tokens).sum();
     let tool_tokens = estimate_tools_tokens(tools);
-    
+
     ContextTokenBreakdown {
         system_tokens,
         message_tokens,
@@ -87,10 +90,13 @@ mod tests {
                 "query": { "type": "string" }
             }
         });
-        
+
         let tokens = estimate_tool_tokens(&schema);
         // Should be at least base cost
-        assert!(tokens >= 20, "Tool should have base cost of at least 20 tokens");
+        assert!(
+            tokens >= 20,
+            "Tool should have base cost of at least 20 tokens"
+        );
     }
 
     #[test]
@@ -106,11 +112,14 @@ mod tests {
             },
             "required": ["a", "b"]
         });
-        
+
         let small_tokens = estimate_tool_tokens(&small_schema);
         let large_tokens = estimate_tool_tokens(&large_schema);
-        
-        assert!(large_tokens > small_tokens, "Larger schema should have more tokens");
+
+        assert!(
+            large_tokens > small_tokens,
+            "Larger schema should have more tokens"
+        );
     }
 
     #[test]
@@ -127,10 +136,10 @@ mod tests {
                 parameters: json!({"type": "object"}),
             },
         ];
-        
+
         let total = estimate_tools_tokens(&tools);
         let single = estimate_tool_tokens(&json!({"type": "object"}));
-        
+
         assert_eq!(total, single * 2, "Multiple tools should sum their tokens");
     }
 
@@ -146,18 +155,16 @@ mod tests {
     #[test]
     fn test_calculate_context_tokens() {
         use crate::messages::AgentMessage;
-        
-        let messages = vec![
-            AgentMessage::from_llm(pi_ai::Message::user("Hello")),
-        ];
+
+        let messages = vec![AgentMessage::from_llm(pi_ai::Message::user("Hello"))];
         let tools = vec![pi_ai::ToolDefinition {
             name: "test".to_string(),
             description: "Test tool".to_string(),
             parameters: json!({"type": "object"}),
         }];
-        
+
         let breakdown = calculate_context_tokens(&messages, &tools, Some("System prompt"));
-        
+
         assert!(breakdown.system_tokens > 0, "Should have system tokens");
         assert!(breakdown.message_tokens > 0, "Should have message tokens");
         assert!(breakdown.tool_tokens > 0, "Should have tool tokens");

@@ -459,9 +459,11 @@ impl AgentTool for EditTool {
             )))
         }
     }
-    
+
     fn clone_boxed(&self) -> Box<dyn AgentTool> {
-        Box::new(EditTool { ops: self.ops.clone() })
+        Box::new(EditTool {
+            ops: self.ops.clone(),
+        })
     }
 }
 
@@ -516,12 +518,7 @@ mod tests {
     #[test]
     fn simple_remove_deletes_line() {
         let original = "alpha\nbeta\ngamma\n";
-        let diff = make_diff(&[
-            "@@ -1,3 +1,2 @@",
-            " alpha",
-            "-beta",
-            " gamma",
-        ]);
+        let diff = make_diff(&["@@ -1,3 +1,2 @@", " alpha", "-beta", " gamma"]);
 
         let (result, summary) = apply_unified_diff(original, &diff).expect("apply failed");
 
@@ -594,7 +591,7 @@ mod tests {
         assert_eq!(
             summary,
             DiffSummary {
-                lines_added: 2,  // "LINE TWO" + "extra line"
+                lines_added: 2,   // "LINE TWO" + "extra line"
                 lines_removed: 1, // "line 2"
                 hunks_applied: 2,
             }
@@ -612,7 +609,7 @@ mod tests {
         let diff = make_diff(&[
             "@@ -1,3 +1,3 @@",
             " foo",
-            " WRONG",   // <-- mismatch
+            " WRONG", // <-- mismatch
             " baz",
         ]);
 
@@ -631,11 +628,7 @@ mod tests {
     fn remove_mismatch_returns_error() {
         let original = "hello\nworld\n";
         // Diff claims to remove "NONEXISTENT" but file has "hello".
-        let diff = make_diff(&[
-            "@@ -1,2 +1,1 @@",
-            "-NONEXISTENT",
-            " world",
-        ]);
+        let diff = make_diff(&["@@ -1,2 +1,1 @@", "-NONEXISTENT", " world"]);
 
         let err = apply_unified_diff(original, &diff).expect_err("should have failed");
         assert!(
@@ -651,18 +644,17 @@ mod tests {
     #[test]
     fn diff_on_file_without_trailing_newline() {
         let original = "a\nb\nc"; // no trailing \n
-        let diff = make_diff(&[
-            "@@ -2,1 +2,1 @@",
-            "-b",
-            "+B",
-        ]);
+        let diff = make_diff(&["@@ -2,1 +2,1 @@", "-b", "+B"]);
 
         let (result, summary) = apply_unified_diff(original, &diff).expect("apply failed");
 
         // The replacement line gets a \n appended because we always add one
         // for Add lines. The final line "c" has no \n (it was stored without
         // one).
-        assert!(result.contains("B\n"), "result should contain replaced line");
+        assert!(
+            result.contains("B\n"),
+            "result should contain replaced line"
+        );
         assert!(result.contains('c'), "result should still contain 'c'");
         assert_eq!(
             summary,

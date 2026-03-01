@@ -283,26 +283,34 @@ impl Input {
         if self.kill_ring.is_empty() || self.last_yank.is_none() {
             return;
         }
-        
+
         let (last_text, last_pos) = self.last_yank.as_ref().unwrap();
-        
+
         // Verify the last yank text is still at the position (hasn't been modified)
-        let current_after_pos: String = self.value.chars().skip(*last_pos).take(last_text.len()).collect();
+        let current_after_pos: String = self
+            .value
+            .chars()
+            .skip(*last_pos)
+            .take(last_text.len())
+            .collect();
         if &current_after_pos == last_text {
             // Remove the previous yank
             self.cursor = *last_pos;
-            self.value = self.value.chars().take(*last_pos)
+            self.value = self
+                .value
+                .chars()
+                .take(*last_pos)
                 .chain(self.value.chars().skip(last_pos + last_text.len()))
                 .collect();
         }
-        
+
         // Rotate to next kill ring entry
         if self.kill_ring_index == 0 {
             self.kill_ring_index = self.kill_ring.len() - 1;
         } else {
             self.kill_ring_index -= 1;
         }
-        
+
         // Insert the new entry
         let text = self.kill_ring[self.kill_ring_index].clone();
         let pos = self.cursor;

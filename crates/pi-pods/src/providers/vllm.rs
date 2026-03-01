@@ -39,7 +39,26 @@ impl VllmManager {
     /// Validate that a string is safe to embed in a shell command.
     /// Rejects shell meta-characters.
     fn validate_shell_arg(s: &str, label: &str) -> Result<()> {
-        if s.chars().any(|c| matches!(c, ';' | '|' | '&' | '$' | '`' | '\'' | '"' | '(' | ')' | '{' | '}' | '<' | '>' | '\n' | '\r' | ' ')) {
+        if s.chars().any(|c| {
+            matches!(
+                c,
+                ';' | '|'
+                    | '&'
+                    | '$'
+                    | '`'
+                    | '\''
+                    | '"'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | '\n'
+                    | '\r'
+                    | ' '
+            )
+        }) {
             anyhow::bail!("{} contains invalid characters: {}", label, s);
         }
         Ok(())
@@ -60,7 +79,8 @@ impl VllmManager {
             Self::validate_shell_arg(ctx, "context length")?;
         }
 
-        let gpu_str = gpus.iter()
+        let gpu_str = gpus
+            .iter()
             .map(|g| g.to_string())
             .collect::<Vec<_>>()
             .join(",");
@@ -90,7 +110,8 @@ impl VllmManager {
 
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 &cmd,
             ])
@@ -107,9 +128,13 @@ impl VllmManager {
         // Verify the process is running
         let check = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
-                &format!("ps -p {} > /dev/null && echo 'running' || echo 'not running'", pid),
+                &format!(
+                    "ps -p {} > /dev/null && echo 'running' || echo 'not running'",
+                    pid
+                ),
             ])
             .output()
             .await?;
@@ -118,7 +143,11 @@ impl VllmManager {
         if !status.contains("running") {
             // Try to get error from log
             let log = self.get_logs(pid).await.unwrap_or_default();
-            anyhow::bail!("vLLM failed to start. PID {} not running.\nLog:\n{}", pid, log);
+            anyhow::bail!(
+                "vLLM failed to start. PID {} not running.\nLog:\n{}",
+                pid,
+                log
+            );
         }
 
         Ok(pid)
@@ -128,9 +157,13 @@ impl VllmManager {
     pub async fn stop_model(&self, pid: u32) -> Result<()> {
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
-                &format!("kill {} 2>/dev/null || kill -9 {} 2>/dev/null || true", pid, pid),
+                &format!(
+                    "kill {} 2>/dev/null || kill -9 {} 2>/dev/null || true",
+                    pid, pid
+                ),
             ])
             .output()
             .await
@@ -140,9 +173,13 @@ impl VllmManager {
         for _ in 0..10 {
             let check = Command::new("ssh")
                 .args(&[
-                    "-o", "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
                     &self.ssh_target,
-                    &format!("ps -p {} > /dev/null 2>&1 && echo 'running' || echo 'stopped'", pid),
+                    &format!(
+                        "ps -p {} > /dev/null 2>&1 && echo 'running' || echo 'stopped'",
+                        pid
+                    ),
                 ])
                 .output()
                 .await?;
@@ -170,7 +207,8 @@ impl VllmManager {
         );
         let log_file_output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 &cmd,
             ])
@@ -178,17 +216,30 @@ impl VllmManager {
             .await
             .context("Failed to find log file")?;
 
-        let log_file = String::from_utf8_lossy(&log_file_output.stdout).trim().to_string();
+        let log_file = String::from_utf8_lossy(&log_file_output.stdout)
+            .trim()
+            .to_string();
 
         let cat_cmd = if log_file.is_empty() || log_file.contains("No such file") {
             "echo 'No logs found'".to_string()
         } else {
-            format!("tail -n 500 {}", log_file.replace(|c: char| !c.is_ascii_alphanumeric() && c != '/' && c != '-' && c != '_' && c != '.', ""))
+            format!(
+                "tail -n 500 {}",
+                log_file.replace(
+                    |c: char| !c.is_ascii_alphanumeric()
+                        && c != '/'
+                        && c != '-'
+                        && c != '_'
+                        && c != '.',
+                    ""
+                )
+            )
         };
 
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
                 &cat_cmd,
             ])
@@ -203,9 +254,13 @@ impl VllmManager {
     pub async fn health_check(&self, port: u16) -> Result<bool> {
         let output = Command::new("ssh")
             .args(&[
-                "-o", "StrictHostKeyChecking=accept-new",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
                 &self.ssh_target,
-                &format!("curl -sf http://localhost:{}/health || echo 'unhealthy'", port),
+                &format!(
+                    "curl -sf http://localhost:{}/health || echo 'unhealthy'",
+                    port
+                ),
             ])
             .output()
             .await?;

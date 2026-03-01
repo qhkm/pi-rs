@@ -193,7 +193,7 @@ impl StreamingMessage {
     fn get_cursor(&self) -> &'static str {
         match self.cursor_frame {
             0 => "▌",
-            1 => "▐", 
+            1 => "▐",
             2 => "▌",
             _ => " ",
         }
@@ -214,19 +214,19 @@ impl StreamingMessage {
 
     fn wrap_content(&self, content: &str, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
-        
+
         for paragraph in content.split('\n') {
             if paragraph.is_empty() {
                 lines.push(String::new());
                 continue;
             }
-            
+
             let mut current_line = String::new();
             let mut current_width = 0usize;
-            
+
             for word in paragraph.split_whitespace() {
                 let word_width = unicode_width::UnicodeWidthStr::width(word);
-                
+
                 if current_width + word_width + 1 > width {
                     if !current_line.is_empty() {
                         lines.push(current_line.clone());
@@ -242,16 +242,16 @@ impl StreamingMessage {
                     current_width += word_width;
                 }
             }
-            
+
             if !current_line.is_empty() {
                 lines.push(current_line);
             }
         }
-        
+
         if lines.is_empty() {
             lines.push(String::new());
         }
-        
+
         lines
     }
 }
@@ -266,7 +266,7 @@ impl Component for StreamingMessage {
     fn render(&self, width: u16) -> Vec<String> {
         let w = (width as usize).min(self.max_width as usize);
         let content = self.content();
-        
+
         let mut lines = if content.is_empty() {
             vec![String::new()]
         } else {
@@ -398,17 +398,17 @@ impl Default for StreamingMessageList {
 impl Component for StreamingMessageList {
     fn render(&self, width: u16) -> Vec<String> {
         let mut all_lines = Vec::new();
-        
+
         for (i, msg) in self.messages.iter().enumerate() {
             let lines = msg.render(width);
             all_lines.extend(lines);
-            
+
             // Add separator between messages (except after last)
             if i < self.messages.len() - 1 {
                 all_lines.push(String::new());
             }
         }
-        
+
         all_lines
     }
 
@@ -436,14 +436,14 @@ mod tests {
     fn test_streaming_message() {
         let mut msg = StreamingMessage::new();
         assert_eq!(msg.state(), StreamingState::Idle);
-        
+
         msg.start();
         assert_eq!(msg.state(), StreamingState::Streaming);
-        
+
         msg.append("Hello");
         msg.append(" World");
         assert_eq!(msg.content(), "Hello World");
-        
+
         msg.complete();
         assert_eq!(msg.state(), StreamingState::Completed);
         assert!(msg.duration().is_some());
@@ -454,7 +454,7 @@ mod tests {
         let mut msg = StreamingMessage::new();
         msg.start();
         msg.append("Test message");
-        
+
         let lines = msg.render(80);
         assert!(!lines.is_empty());
     }
@@ -462,18 +462,18 @@ mod tests {
     #[test]
     fn test_message_list() {
         let mut list = StreamingMessageList::new();
-        
+
         let mut msg1 = StreamingMessage::new();
         msg1.start();
         msg1.append("First");
         msg1.complete();
         list.add_message(msg1);
-        
+
         let mut msg2 = StreamingMessage::new();
         msg2.start();
         msg2.append("Second");
         list.add_message(msg2);
-        
+
         assert_eq!(list.messages().len(), 2);
     }
 
@@ -481,7 +481,7 @@ mod tests {
     fn test_wrap_content() {
         let msg = StreamingMessage::new().with_max_width(20);
         let lines = msg.wrap_content("This is a long message that needs wrapping", 10);
-        
+
         assert!(lines.len() > 1);
         for line in &lines {
             assert!(line.len() <= 10 || line.contains("message"));

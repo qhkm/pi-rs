@@ -141,7 +141,12 @@ impl SkillCatalog {
         let tag_lower = tag.to_lowercase();
         self.skills
             .values()
-            .filter(|s| s.metadata.tags.iter().any(|t| t.to_lowercase() == tag_lower))
+            .filter(|s| {
+                s.metadata
+                    .tags
+                    .iter()
+                    .any(|t| t.to_lowercase() == tag_lower)
+            })
             .collect()
     }
 
@@ -153,7 +158,10 @@ impl SkillCatalog {
             .filter(|s| {
                 s.name.to_lowercase().contains(&query_lower)
                     || s.description.to_lowercase().contains(&query_lower)
-                    || s.metadata.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
+                    || s.metadata
+                        .tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&query_lower))
             })
             .collect()
     }
@@ -264,24 +272,23 @@ pub async fn install_skill_from_git(
     name: Option<&str>,
 ) -> Result<Skill> {
     let destination_root = cwd.join(".pi").join("skills");
-    
+
     // Clone to temp directory
     let temp_dir = tempfile::tempdir()?;
     let clone_path = temp_dir.path().join("skill");
-    
-    let clone_path_str = clone_path.to_str()
-        .context("Invalid UTF-8 in clone path")?;
+
+    let clone_path_str = clone_path.to_str().context("Invalid UTF-8 in clone path")?;
     let output = tokio::process::Command::new("git")
         .args(["clone", "--depth", "1", git_url, clone_path_str])
         .output()
         .await
         .context("Failed to execute git clone")?;
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("Failed to clone repository: {}", stderr);
     }
-    
+
     // Find SKILL.md in cloned repo
     let skill_file = if clone_path.join(SKILL_FILE_NAME).exists() {
         clone_path.join(SKILL_FILE_NAME)
@@ -297,49 +304,47 @@ pub async fn install_skill_from_git(
         }
         found.context("No SKILL.md found in repository")?
     };
-    
+
     let mut skill = install_skill(&skill_file, &destination_root)?;
-    
+
     // Override name if specified
     if let Some(name) = name {
         skill.name = name.to_string();
         skill.metadata.name = name.to_string();
     }
-    
+
     // Set source in metadata
     skill.metadata.source = Some(git_url.to_string());
-    
+
     Ok(skill)
 }
 
 /// Install a skill from a remote URL (raw file).
-pub async fn install_skill_from_url(
-    cwd: &Path,
-    url: &str,
-    name: Option<&str>,
-) -> Result<Skill> {
+pub async fn install_skill_from_url(cwd: &Path, url: &str, name: Option<&str>) -> Result<Skill> {
     let destination_root = cwd.join(".pi").join("skills");
-    
+
     // Download skill file
-    let response = reqwest::get(url).await.context("Failed to download skill")?;
+    let response = reqwest::get(url)
+        .await
+        .context("Failed to download skill")?;
     if !response.status().is_success() {
         anyhow::bail!("Failed to download skill: HTTP {}", response.status());
     }
     let content = response.text().await.context("Failed to read response")?;
-    
+
     // Parse to get name
     let (parsed_name, _, _) = parse_skill_content(Path::new("remote.md"), &content);
     let skill_name = name.unwrap_or(&parsed_name);
-    
+
     // Create directory and write file
     let target_dir = destination_root.join(slugify(skill_name));
     fs::create_dir_all(&target_dir)?;
     let target_file = target_dir.join(SKILL_FILE_NAME);
     fs::write(&target_file, content)?;
-    
+
     // Parse the installed skill
     let skill = parse_skill_file(&target_file)?.context("Failed to parse installed skill")?;
-    
+
     Ok(skill)
 }
 
@@ -441,10 +446,7 @@ fn parse_skill_file(path: &Path) -> Result<Option<Skill>> {
 }
 
 /// Parse skill content with full YAML frontmatter support.
-fn parse_skill_content_full(
-    path: &Path,
-    raw: &str,
-) -> (String, String, String, SkillMetadata) {
+fn parse_skill_content_full(path: &Path, raw: &str) -> (String, String, String, SkillMetadata) {
     let mut metadata = SkillMetadata::default();
     let mut body = raw.trim().to_string();
 
@@ -453,7 +455,7 @@ fn parse_skill_content_full(
         if let Some(end) = rest.find("\n---\n") {
             let fm = &rest[..end];
             body = rest[(end + 5)..].trim().to_string();
-            
+
             // Try full YAML parsing first
             match serde_yaml::from_str::<SkillMetadata>(fm) {
                 Ok(parsed) => metadata = parsed,
@@ -493,7 +495,7 @@ fn parse_skill_content_full(
             })
             .unwrap_or_else(|| "unnamed-skill".to_string());
     }
-    
+
     let name = metadata.name.clone();
     let description = if metadata.description.is_empty() {
         name.clone()
@@ -613,7 +615,7 @@ impl AgentTool for SkillTool {
 
         Ok(ToolResult::success(content))
     }
-    
+
     fn clone_boxed(&self) -> Box<dyn AgentTool> {
         Box::new(SkillTool {
             tool_name: self.tool_name.clone(),
@@ -782,11 +784,11 @@ Use snake_case."#;
         let mut active = ActiveSkills::default();
         active.set("skill1");
         active.set("skill2");
-        
+
         assert!(active.has("skill1"));
         assert!(active.has("Skill1")); // case insensitive
         assert!(!active.has("skill3"));
-        
+
         active.remove("skill1");
         assert!(!active.has("skill1"));
         assert_eq!(active.list().len(), 1);

@@ -2,7 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-330+-green.svg)]()
+[![Tests](https://img.shields.io/badge/tests-461+-green.svg)]()
 
 > **Minimal core. Maximum extensibility. Your workflow, your way.**
 
@@ -278,11 +278,11 @@ cargo test -p pi-tui
 
 | Metric | pi (Rust) | Others (Node/TS) |
 |--------|-----------|------------------|
-| Lines of Code | ~35K | ~128K+ |
+| Lines of Code | ~39K | ~128K+ |
 | Binary Size | ~15MB | 100MB+ (bundled) |
 | Startup Time | <50ms | 1-3s |
 | Memory Usage | ~50MB | 200MB+ |
-| Test Coverage | 330+ tests | Varies |
+| Test Coverage | 461+ tests | Varies |
 
 ## 🤝 Contributing
 

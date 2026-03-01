@@ -39,7 +39,7 @@ Be respectful, constructive, and inclusive in all interactions.
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/pi-rs
+git clone https://github.com/YOUR-USERNAME/pi-rs
 cd pi-rs
 
 # Build

@@ -97,7 +97,9 @@ pub struct AgentConfig {
     /// When set, this closure is called before each LLM request to determine
     /// the thinking level based on the current context (messages, tools, etc.).
     /// This allows adaptive reasoning based on task complexity.
-    pub thinking_budget_selector: Option<Box<dyn Fn(&[crate::messages::AgentMessage]) -> Option<ThinkingLevel> + Send + Sync>>,
+    pub thinking_budget_selector: Option<
+        Box<dyn Fn(&[crate::messages::AgentMessage]) -> Option<ThinkingLevel> + Send + Sync>,
+    >,
 }
 
 impl AgentConfig {
@@ -114,9 +116,7 @@ impl AgentConfig {
             .thinking_budgets
             .as_ref()
             .and_then(|m| m.get(&level).copied())
-            .unwrap_or_else(|| {
-                *default_thinking_budgets().get(&level).unwrap_or(&0)
-            });
+            .unwrap_or_else(|| *default_thinking_budgets().get(&level).unwrap_or(&0));
 
         Some(budget)
     }
@@ -202,22 +202,31 @@ mod tests {
     use super::*;
 
     // Minimal stub so we can construct AgentConfig without a real provider.
-    use std::sync::Arc;
-    use pi_ai::{Context, LLMProvider, Model, ProviderCapabilities, StreamEvent, StreamOptions};
-    use pi_ai::models::registry::built_in_models;
     use async_trait::async_trait;
+    use pi_ai::models::registry::built_in_models;
+    use pi_ai::{Context, LLMProvider, Model, ProviderCapabilities, StreamEvent, StreamOptions};
+    use std::sync::Arc;
     use tokio::sync::mpsc;
 
     struct NoopProvider;
 
     #[async_trait]
     impl LLMProvider for NoopProvider {
-        fn name(&self) -> &str { "noop" }
-        fn capabilities(&self) -> ProviderCapabilities { ProviderCapabilities::default() }
+        fn name(&self) -> &str {
+            "noop"
+        }
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities::default()
+        }
         async fn stream(
-            &self, _model: &Model, _ctx: &Context, _opts: &StreamOptions,
+            &self,
+            _model: &Model,
+            _ctx: &Context,
+            _opts: &StreamOptions,
             _tx: mpsc::Sender<StreamEvent>,
-        ) -> pi_ai::Result<()> { Ok(()) }
+        ) -> pi_ai::Result<()> {
+            Ok(())
+        }
     }
 
     fn make_config(
@@ -260,10 +269,10 @@ mod tests {
     fn default_budgets_are_used_when_no_custom_map() {
         let cases = [
             (ThinkingLevel::Minimal, 1_024u64),
-            (ThinkingLevel::Low,     4_096),
-            (ThinkingLevel::Medium,  10_240),
-            (ThinkingLevel::High,    32_768),
-            (ThinkingLevel::XHigh,   0),     // 0 = provider max
+            (ThinkingLevel::Low, 4_096),
+            (ThinkingLevel::Medium, 10_240),
+            (ThinkingLevel::High, 32_768),
+            (ThinkingLevel::XHigh, 0), // 0 = provider max
         ];
 
         for (level, expected) in cases {

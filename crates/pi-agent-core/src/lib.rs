@@ -9,9 +9,12 @@ pub use error::{AgentError, Result};
 pub use tools::{AgentTool, ToolContext, ToolProgress, ToolRegistry, ToolResult};
 
 // Agent core re-exports
+pub use agent::ContextTransformFn;
 pub use agent::{Agent, AgentConfig, AgentSharedState, AgentState};
 pub use agent::{AgentEndReason, AgentEvent};
-pub use agent::ContextTransformFn;
 
 // Hook system re-exports
-pub use agent::{HookContext, HookEvent, HookHandler, HookOutcome, HookRegistry, HookResult, resolve_hook_results};
+pub use agent::{
+    resolve_hook_results, HookContext, HookEvent, HookHandler, HookOutcome, HookRegistry,
+    HookResult,
+};

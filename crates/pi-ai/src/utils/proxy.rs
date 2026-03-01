@@ -15,7 +15,6 @@
 /// All providers call [`build_http_client`] instead of constructing their own
 /// `reqwest::Client`, which keeps proxy and timeout behaviour consistent across
 /// Anthropic, OpenAI, and Google backends.
-
 use std::time::Duration;
 
 use tracing::debug;
@@ -39,11 +38,9 @@ use tracing::debug;
 /// Panics if the TLS backend fails to initialise — this is a hard failure
 /// because all providers depend on a working HTTPS stack.
 pub fn build_http_client(timeout_secs: u64) -> reqwest::Client {
-    configure_proxy(
-        reqwest::Client::builder().timeout(Duration::from_secs(timeout_secs)),
-    )
-    .build()
-    .expect("failed to build HTTP client")
+    configure_proxy(reqwest::Client::builder().timeout(Duration::from_secs(timeout_secs)))
+        .build()
+        .expect("failed to build HTTP client")
 }
 
 /// Apply proxy settings from environment variables to a [`reqwest::ClientBuilder`].
@@ -55,9 +52,7 @@ pub fn build_http_client(timeout_secs: u64) -> reqwest::Client {
 /// can compose it with their own builder configuration.
 pub fn configure_proxy(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
     let no_proxy = env_var_nonempty(&["NO_PROXY", "no_proxy"]);
-    let no_proxy_filter = no_proxy
-        .as_deref()
-        .map(reqwest::NoProxy::from_string);
+    let no_proxy_filter = no_proxy.as_deref().map(reqwest::NoProxy::from_string);
 
     if let Some(ref val) = no_proxy {
         debug!(no_proxy = %val, "NO_PROXY configured");
@@ -153,10 +148,14 @@ mod tests {
     fn client_builds_without_proxy_env() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::clear(&[
-            "HTTPS_PROXY", "https_proxy",
-            "HTTP_PROXY",  "http_proxy",
-            "ALL_PROXY",   "all_proxy",
-            "NO_PROXY",    "no_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
         ]);
 
         let client = build_http_client(30);
@@ -219,10 +218,14 @@ mod tests {
     fn configure_proxy_returns_builder_for_chaining() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvGuard::clear(&[
-            "HTTPS_PROXY", "https_proxy",
-            "HTTP_PROXY",  "http_proxy",
-            "ALL_PROXY",   "all_proxy",
-            "NO_PROXY",    "no_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
         ]);
 
         let client = configure_proxy(reqwest::Client::builder())

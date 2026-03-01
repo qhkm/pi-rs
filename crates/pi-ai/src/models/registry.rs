@@ -961,7 +961,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 16_384,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -983,7 +986,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1005,7 +1011,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 65_536,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1027,7 +1036,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1049,7 +1061,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1384,7 +1399,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1406,7 +1424,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1428,7 +1449,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1450,7 +1474,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 4_096,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1472,7 +1499,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1494,7 +1524,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 4_096,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1516,7 +1549,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1538,7 +1574,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },
@@ -1560,7 +1599,10 @@ static BUILT_IN_MODELS: LazyLock<Vec<Model>> = LazyLock::new(|| {
             max_tokens: 8_192,
             headers: Some({
                 let mut h = std::collections::HashMap::new();
-                h.insert("HTTP-Referer".to_string(), "https://github.com/pi-mono-rs".to_string());
+                h.insert(
+                    "HTTP-Referer".to_string(),
+                    "https://github.com/pi-mono-rs".to_string(),
+                );
                 h
             }),
         },

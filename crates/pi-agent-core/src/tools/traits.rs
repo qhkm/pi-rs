@@ -122,7 +122,7 @@ pub trait AgentTool: Send + Sync {
             parameters: self.parameters_schema(),
         }
     }
-    
+
     /// Clone this tool into a boxed trait object.
     /// Required for spawning tool execution in async tasks.
     fn clone_boxed(&self) -> Box<dyn AgentTool>;

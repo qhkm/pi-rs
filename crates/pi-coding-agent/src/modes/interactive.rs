@@ -152,9 +152,8 @@ async fn run_prompt_with_events(agent: &Arc<Agent>, input: Message) -> Result<()
 
     // Clone the Arc so the spawned task owns its own handle to the agent.
     let agent_clone = Arc::clone(agent);
-    let prompt_handle = tokio::task::spawn_local(async move {
-        agent_clone.prompt_message(input).await
-    });
+    let prompt_handle =
+        tokio::task::spawn_local(async move { agent_clone.prompt_message(input).await });
 
     // Drive the event stream until the agent signals completion
     let mut agent_done = false;

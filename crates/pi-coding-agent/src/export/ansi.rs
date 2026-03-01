@@ -16,7 +16,7 @@ pub fn ansi_to_html(input: &str) -> String {
     let mut i = 0;
 
     // Current render state
-    let mut fg: Option<&str> = None;    // CSS color string (static or heap-allocated — we use &str from table or owned via String)
+    let mut fg: Option<&str> = None; // CSS color string (static or heap-allocated — we use &str from table or owned via String)
     let mut bg: Option<&str> = None;
     let mut bold = false;
     let mut italic = false;
@@ -91,8 +91,7 @@ pub fn ansi_to_html(input: &str) -> String {
                     let final_byte = bytes[j];
                     if final_byte == b'm' {
                         // SGR sequence — parse parameters.
-                        let params_str =
-                            std::str::from_utf8(&bytes[param_start..j]).unwrap_or("");
+                        let params_str = std::str::from_utf8(&bytes[param_start..j]).unwrap_or("");
 
                         // Close existing span before potentially emitting a new one.
                         close_span(&mut out, &mut span_open);
@@ -136,11 +135,26 @@ pub fn ansi_to_html(input: &str) -> String {
             // Regular character — HTML-escape and emit.
             // Handle multi-byte UTF-8 correctly by decoding the full character.
             match bytes[i] {
-                b'&' => { out.push_str("&amp;"); i += 1; }
-                b'<' => { out.push_str("&lt;"); i += 1; }
-                b'>' => { out.push_str("&gt;"); i += 1; }
-                b'"' => { out.push_str("&quot;"); i += 1; }
-                b if b < 0x80 => { out.push(b as char); i += 1; }
+                b'&' => {
+                    out.push_str("&amp;");
+                    i += 1;
+                }
+                b'<' => {
+                    out.push_str("&lt;");
+                    i += 1;
+                }
+                b'>' => {
+                    out.push_str("&gt;");
+                    i += 1;
+                }
+                b'"' => {
+                    out.push_str("&quot;");
+                    i += 1;
+                }
+                b if b < 0x80 => {
+                    out.push(b as char);
+                    i += 1;
+                }
                 _ => {
                     // Multi-byte UTF-8: decode from the byte slice
                     let remaining = &input[i..];

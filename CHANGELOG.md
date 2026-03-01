@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session management with branching/forking
 - Context compaction and token tracking
 - HTML export with ANSI-to-HTML
-- 330+ tests across workspace
+- 461+ tests across workspace
 
 ## [0.1.0] - 2026-03-01
 
@@ -33,5 +33,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic tool suite
 - Interactive and print modes
 
-[Unreleased]: https://github.com/yourusername/pi-rs/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/yourusername/pi-rs/releases/tag/v0.1.0
+[Unreleased]: https://github.com/qhkm/pi-rs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/qhkm/pi-rs/releases/tag/v0.1.0

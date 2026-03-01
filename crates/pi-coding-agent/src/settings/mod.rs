@@ -219,11 +219,7 @@ mod tests {
             .join("agent")
             .join("settings.json");
 
-        let project_settings_path = tmp
-            .path()
-            .join("project")
-            .join(".pi")
-            .join("settings.json");
+        let project_settings_path = tmp.path().join("project").join(".pi").join("settings.json");
 
         SettingsManager::with_paths(user_settings_path, project_settings_path)
     }
@@ -274,7 +270,10 @@ mod tests {
         // provider comes from user (project didn't set it)
         assert_eq!(effective.default_provider.as_deref(), Some("anthropic"));
         // model and max_turns come from project (overlay wins)
-        assert_eq!(effective.default_model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(
+            effective.default_model.as_deref(),
+            Some("claude-sonnet-4-6")
+        );
         assert_eq!(effective.max_turns, Some(5));
     }
 

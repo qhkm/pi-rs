@@ -192,9 +192,8 @@ async fn run_tui_loop(agent: Arc<Agent>) -> Result<()> {
                             let agent_clone = agent.clone();
 
                             let prompt_text = trimmed.clone();
-                            let mut prompt_handle = tokio::spawn(async move {
-                                agent_clone.prompt(&prompt_text).await
-                            });
+                            let mut prompt_handle =
+                                tokio::spawn(async move { agent_clone.prompt(&prompt_text).await });
 
                             // Collect streaming events while the prompt runs
                             loop {
@@ -276,7 +275,8 @@ fn truncate(s: &str, max_width: usize) -> String {
     if s.len() <= max_width {
         s.to_string()
     } else {
-        let end = s.char_indices()
+        let end = s
+            .char_indices()
             .take_while(|(i, _)| *i < max_width.saturating_sub(3))
             .last()
             .map(|(i, c)| i + c.len_utf8())
@@ -322,10 +322,7 @@ mod tests {
         // Verify that Ctrl-C sets should_quit.
         // We can't construct a full TuiApp without a real Agent, but we can
         // test the key-to-bytes conversion used for quit detection.
-        let key = event::KeyEvent::new(
-            event::KeyCode::Char('c'),
-            event::KeyModifiers::CONTROL,
-        );
+        let key = event::KeyEvent::new(event::KeyCode::Char('c'), event::KeyModifiers::CONTROL);
         let bytes = crossterm_key_to_bytes(&key);
         // Ctrl-C is ASCII 3
         assert_eq!(bytes, "\x03");

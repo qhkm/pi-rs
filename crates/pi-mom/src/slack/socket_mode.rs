@@ -204,23 +204,19 @@ impl SocketModeClient {
         if !response.ok {
             anyhow::bail!(
                 "Slack API error: {}",
-                response.error.unwrap_or_else(|| "Unknown error".to_string())
+                response
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string())
             );
         }
 
-        response
-            .url
-            .context("No WebSocket URL in response")
+        response.url.context("No WebSocket URL in response")
     }
 
     /// Handle incoming WebSocket message
-    async fn handle_message(
-        &self,
-        text: &str,
-        tx: &mpsc::Sender<Message>,
-    ) -> Result<()> {
-        let msg: WsMessage = serde_json::from_str(text)
-            .context("Failed to parse WebSocket message")?;
+    async fn handle_message(&self, text: &str, tx: &mpsc::Sender<Message>) -> Result<()> {
+        let msg: WsMessage =
+            serde_json::from_str(text).context("Failed to parse WebSocket message")?;
 
         match msg {
             WsMessage::Hello { connection_info } => {
@@ -349,7 +345,12 @@ impl SocketModeClient {
     }
 
     /// Send a message to a Slack channel
-    pub async fn send_message(&self, channel: &str, text: &str, thread_ts: Option<&str>) -> Result<()> {
+    pub async fn send_message(
+        &self,
+        channel: &str,
+        text: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<()> {
         let client = reqwest::Client::new();
         let mut payload = json!({
             "channel": channel,
@@ -370,7 +371,7 @@ impl SocketModeClient {
             .context("Failed to send Slack message")?;
 
         let result: serde_json::Value = response.json().await?;
-        
+
         if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             let error = result
                 .get("error")

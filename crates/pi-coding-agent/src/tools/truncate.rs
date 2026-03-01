@@ -89,7 +89,11 @@ fn hard_cap(s: &str, max_chars: usize) -> String {
         .last()
         .map(|(i, c)| i + c.len_utf8())
         .unwrap_or(0);
-    format!("{}\n[... output hard-capped at {} chars ...]", &s[..boundary], max_chars)
+    format!(
+        "{}\n[... output hard-capped at {} chars ...]",
+        &s[..boundary],
+        max_chars
+    )
 }
 
 #[cfg(test)]
@@ -108,7 +112,10 @@ mod tests {
         let content = "line one\nline two\nline three\n";
         let cfg = default_cfg();
         let result = smart_truncate(content, &cfg);
-        assert_eq!(result, content, "Content under max_chars must not be altered");
+        assert_eq!(
+            result, content,
+            "Content under max_chars must not be altered"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -132,7 +139,10 @@ mod tests {
         let content = lines.join("\n");
 
         // Sanity-check: content is actually over the limit.
-        assert!(content.len() > cfg.max_chars, "Test setup: content must exceed max_chars");
+        assert!(
+            content.len() > cfg.max_chars,
+            "Test setup: content must exceed max_chars"
+        );
 
         let result = smart_truncate(&content, &cfg);
 
@@ -199,7 +209,10 @@ mod tests {
         };
         let content = "0123456789"; // exactly 10 chars
         let result = smart_truncate(&content, &cfg);
-        assert_eq!(result, content, "Content exactly at max_chars must not be truncated");
+        assert_eq!(
+            result, content,
+            "Content exactly at max_chars must not be truncated"
+        );
     }
 
     // -------------------------------------------------------------------------

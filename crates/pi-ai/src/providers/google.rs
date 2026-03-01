@@ -575,10 +575,7 @@ mod tests {
             mime_type: "image/webp".to_string(),
         };
         let msg = Message::User(crate::messages::types::UserMessage {
-            content: UserContent::Blocks(vec![
-                Content::text("Explain this diagram."),
-                image,
-            ]),
+            content: UserContent::Blocks(vec![Content::text("Explain this diagram."), image]),
             timestamp: Utc::now().timestamp_millis(),
         });
 
