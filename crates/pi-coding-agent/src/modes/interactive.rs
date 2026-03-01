@@ -79,7 +79,7 @@ pub async fn run_interactive_mode(
 }
 
 /// The main REPL loop
-async fn repl_loop(agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<String>>>) -> Result<()> {
+async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<String>>>) -> Result<()> {
     let mut catalog = crate::skills::SkillCatalog::discover(Path::new(&agent.config.cwd))?;
     let mut active_skills = crate::skills::ActiveSkills::default();
     if !catalog.is_empty() {
@@ -165,10 +165,41 @@ async fn repl_loop(agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<String>
             *runtime_api_key.write().unwrap_or_else(|e| e.into_inner()) = Some(value.to_string());
             println!("[auth] runtime API key set: {}", mask_secret(value));
             
-            // Try to detect provider from key format
+            // Try to detect provider from key format and re-register it
             let detected = detect_provider_from_key(value);
-            println!("[auth] detected provider: {}. Restart with --provider {} to use it.", 
-                detected, detected);
+            if detected != "unknown" {
+                match create_provider(&detected, value) {
+                    Ok(new_provider) => {
+                        // Register in global registry
+                        use pi_ai::messages::types::Api;
+                        let api_key = match detected {
+                            "anthropic" => Api::AnthropicMessages.to_string(),
+                            "openai" => Api::OpenAICompletions.to_string(),
+                            "google" => Api::GoogleGenerativeAI.to_string(),
+                            "groq" | "openrouter" => Api::OpenAICompletions.to_string(),
+                            _ => Api::OpenAICompletions.to_string(),
+                        };
+                        pi_ai::register_provider(&api_key, new_provider.clone());
+                        
+                        // Try to update the agent's provider
+                        if let Some(agent_mut) = Arc::get_mut(&mut agent) {
+                            agent_mut.update_provider(new_provider);
+                            println!("[auth] provider '{}' activated and ready to use", detected);
+                        } else {
+                            println!("[auth] provider '{}' registered. New conversations will use it.", detected);
+                            println!("[auth] (active conversation still uses previous provider)");
+                        }
+                    }
+                    Err(e) => {
+                        println!("[auth] warning: failed to create provider: {}", e);
+                        println!("[auth] detected provider: {}. You may need to restart with --provider {}", 
+                            detected, detected);
+                    }
+                }
+            } else {
+                println!("[auth] detected provider: {}. Restart with --provider <name> to use it.", 
+                    detected);
+            }
             continue;
         }
         if input == "/providers" {
@@ -464,4 +495,45 @@ fn print_available_providers() {
     println!("");
     println!("[providers] usage: pi --provider <name>");
     println!("[providers] or: /provider <name> (shows restart command)");
+}
+
+/// Create a provider with a specific API key
+fn create_provider(provider_name: &str, api_key: &str) -> Result<std::sync::Arc<dyn pi_ai::LLMProvider>, String> {
+    use std::sync::Arc;
+
+    let provider_arc: Arc<dyn pi_ai::LLMProvider> = match provider_name {
+        "anthropic" => {
+            use pi_ai::providers::anthropic::AnthropicProvider;
+            Arc::new(AnthropicProvider::new(api_key.to_string(), None))
+        }
+        "openai" => {
+            use pi_ai::providers::openai::OpenAIProvider;
+            Arc::new(OpenAIProvider::new(api_key.to_string(), None, Default::default()))
+        }
+        "google" => {
+            use pi_ai::providers::google::GoogleProvider;
+            Arc::new(GoogleProvider::new(api_key.to_string(), None))
+        }
+        "groq" => {
+            use pi_ai::providers::openai::OpenAIProvider;
+            // Groq uses OpenAI-compatible API
+            Arc::new(OpenAIProvider::new(
+                api_key.to_string(),
+                Some("https://api.groq.com/openai/v1"),
+                Default::default(),
+            ))
+        }
+        "openrouter" => {
+            use pi_ai::providers::openai::OpenAIProvider;
+            // OpenRouter uses OpenAI-compatible API
+            Arc::new(OpenAIProvider::new(
+                api_key.to_string(),
+                Some("https://openrouter.ai/api/v1"),
+                Default::default(),
+            ))
+        }
+        _ => return Err(format!("unsupported provider: {}", provider_name)),
+    };
+
+    Ok(provider_arc)
 }

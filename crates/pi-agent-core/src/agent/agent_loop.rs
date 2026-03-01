@@ -6,7 +6,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use pi_ai::{
-    AssistantMessage, Content, Context, Message, Model, SimpleStreamOptions, StreamEvent,
+    AssistantMessage, Content, Context, LLMProvider, Message, Model, SimpleStreamOptions, StreamEvent,
     StreamOptions, ToolResultMessage,
 };
 
@@ -175,6 +175,14 @@ impl Agent {
     /// Reset the abort signal (for reuse after abort)
     pub fn reset_abort(&self) {
         let _ = self.shared.abort_tx.send(false);
+    }
+
+    /// Update the LLM provider at runtime.
+    ///
+    /// This is useful when the user sets a new API key via `/setkey` and wants
+    /// to switch providers without restarting the session.
+    pub fn update_provider(&mut self, provider: Arc<dyn LLMProvider>) {
+        self.config.provider = Some(provider);
     }
 
     /// Register a tool
