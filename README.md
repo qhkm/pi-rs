@@ -14,7 +14,7 @@ A high-performance, terminal-native AI coding agent built in Rust. This is a Rus
 
 ```bash
 # Clone and build
-git clone https://github.com/yourusername/pi-rs
+git clone https://github.com/qhkm/pi-rs
 cd pi-rs
 cargo build --release
 
@@ -97,7 +97,7 @@ cargo install --path crates/pi-coding-agent
 
 ### Homebrew (macOS/Linux)
 ```bash
-brew tap yourusername/pi
+brew tap qhkm/pi
 brew install pi
 ```
 
@@ -315,6 +315,6 @@ This project is licensed under the [MIT License](LICENSE).
 
 <div align="center">
 
-**[Philosophy](PHILOSOPHY.md)** • **[Documentation](https://docs.rs/pi-coding-agent)** • **[Issues](https://github.com/yourusername/pi-rs/issues)** • **[Discussions](https://github.com/yourusername/pi-rs/discussions)**
+**[Philosophy](PHILOSOPHY.md)** • **[Documentation](https://docs.rs/pi-coding-agent)** • **[Issues](https://github.com/qhkm/pi-rs/issues)** • **[Discussions](https://github.com/qhkm/pi-rs/discussions)**
 
 </div>
