@@ -125,9 +125,9 @@ impl AgentConfig {
     /// Get the provider from the global registry.
     /// Looks up by provider_api identifier, allowing runtime provider changes.
     pub fn get_provider(&self) -> Option<Arc<dyn LLMProvider>> {
-        self.provider_api.as_ref().and_then(|api| {
-            pi_ai::get_provider(api)
-        })
+        self.provider_api
+            .as_ref()
+            .and_then(|api| pi_ai::get_provider(api))
     }
 }
 

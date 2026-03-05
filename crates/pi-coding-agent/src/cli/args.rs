@@ -36,7 +36,7 @@ pub struct Args {
     #[arg(short = 'c', long)]
     pub resume: bool,
 
-    /// Output mode: text (default), json, rpc
+    /// Output mode: text (default, full TUI), json, rpc, repl (legacy readline)
     #[arg(long, default_value = "text")]
     pub mode: String,
 

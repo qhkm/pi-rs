@@ -36,7 +36,8 @@ pub trait Focusable {
     fn set_focused(&mut self, focused: bool);
 }
 
-/// Cursor marker for IME positioning (zero-width APC sequence).
-/// This is written at the logical cursor position so the host can
-/// position an IME composition window correctly.
-pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
+/// Cursor marker rendered at the logical cursor position.
+///
+/// We intentionally use an ASCII marker for broad terminal compatibility.
+/// Some terminals render control-sequence markers as `?`/replacement chars.
+pub const CURSOR_MARKER: &str = "|";

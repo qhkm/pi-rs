@@ -6,8 +6,8 @@ use tracing::warn;
 use uuid::Uuid;
 
 use pi_ai::{
-    AssistantMessage, Content, Context, LLMProvider, Message, Model, SimpleStreamOptions, StreamEvent,
-    StreamOptions, ToolResultMessage,
+    AssistantMessage, Content, Context, Message, Model, SimpleStreamOptions, StreamEvent,
+    StreamOptions, ThinkingLevel, ToolResultMessage,
 };
 
 use crate::context::compaction::{
@@ -42,6 +42,13 @@ pub struct Agent {
     /// Runtime provider API override (set via /setkey). Takes precedence over config.
     /// Uses std::sync::RwLock since these methods are not async.
     runtime_provider_api: std::sync::RwLock<Option<String>>,
+    /// Runtime thinking level override.
+    ///
+    /// Outer `Option` tracks whether an override was explicitly set at runtime:
+    /// - `None` => use `config.thinking_level`
+    /// - `Some(None)` => force "thinking off"
+    /// - `Some(Some(level))` => force specific level
+    runtime_thinking_level: std::sync::RwLock<Option<Option<ThinkingLevel>>>,
     /// Conversation messages (stored here so Agent owns them directly)
     messages: tokio::sync::RwLock<Vec<AgentMessage>>,
     current_model: tokio::sync::RwLock<Model>,
@@ -93,6 +100,7 @@ impl Agent {
         Self {
             config,
             runtime_provider_api: std::sync::RwLock::new(None),
+            runtime_thinking_level: std::sync::RwLock::new(None),
             shared: Arc::new(AgentSharedState::new_with_compaction(compaction_enabled)),
             messages: tokio::sync::RwLock::new(Vec::new()),
             current_model: tokio::sync::RwLock::new(current_model),
@@ -203,7 +211,27 @@ impl Agent {
         // Fall back to config
         self.config.provider_api.clone()
     }
-    
+
+    /// Override the thinking level at runtime.
+    ///
+    /// Passing `Some(level)` forces that reasoning level.
+    /// Passing `None` forces reasoning off.
+    pub fn update_thinking_level(&self, level: Option<ThinkingLevel>) {
+        if let Ok(mut guard) = self.runtime_thinking_level.write() {
+            *guard = Some(level);
+        }
+    }
+
+    /// Get the effective thinking level (runtime override or config default).
+    pub fn get_thinking_level(&self) -> Option<ThinkingLevel> {
+        if let Ok(runtime) = self.runtime_thinking_level.read() {
+            if let Some(level) = *runtime {
+                return level;
+            }
+        }
+        self.config.thinking_level
+    }
+
     /// Get the current model (checking for runtime updates)
     pub async fn get_current_model(&self) -> Model {
         self.current_model.read().await.clone()
@@ -671,8 +699,8 @@ impl Agent {
             .and_then(|selector| selector(&current_messages));
         drop(current_messages);
 
-        // Use dynamic level if provided, otherwise fall back to static config
-        let effective_thinking_level = dynamic_level.or(self.config.thinking_level);
+        // Use dynamic level if provided, otherwise fall back to runtime/config level.
+        let effective_thinking_level = dynamic_level.or(self.get_thinking_level());
 
         // Emit event if dynamic thinking level was selected
         if dynamic_level.is_some() {

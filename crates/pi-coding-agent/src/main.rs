@@ -14,7 +14,16 @@ use pi_coding_agent::tools::operations::LocalFileOps;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let runtime_api_key = Arc::new(RwLock::new(args.api_key.clone()));
+    let persisted_auth = if args.api_key.is_none() {
+        pi_coding_agent::auth::load_persisted_auth()
+    } else {
+        None
+    };
+    let runtime_api_key = Arc::new(RwLock::new(
+        args.api_key
+            .clone()
+            .or_else(|| persisted_auth.as_ref().map(|a| a.api_key.clone())),
+    ));
 
     // Initialize tracing
     if args.verbose {
@@ -31,7 +40,15 @@ async fn main() -> Result<()> {
     let loaded_context =
         pi_coding_agent::context::resource_loader::load_context(std::path::Path::new(&cwd))?;
 
-    let default_prompt = "You are a helpful AI coding assistant. You have access to tools for reading, writing, and editing files, running bash commands, and searching code.";
+    let default_prompt = r#"You are a helpful AI coding assistant. You have access to tools for reading, writing, and editing files, running bash commands, and searching code.
+
+When asked about this project ("what is this project", "explain this codebase", etc.):
+1. First check for AGENTS.md, README.md, or similar documentation files
+2. If no documentation exists, explore the codebase:
+   - Read Cargo.toml to understand the project structure
+   - List the top-level directories (crates/, src/, etc.)
+   - Read key source files to understand the main components
+3. Provide a comprehensive summary based on what you find"#;
 
     let system_prompt = pi_coding_agent::context::resource_loader::build_system_prompt(
         &loaded_context,
@@ -41,7 +58,13 @@ async fn main() -> Result<()> {
 
     // Resolve provider and model(s)
     // Allow starting without a provider configured - will show error in TUI when user tries to send a message
-    let provider_name = resolve_provider_name(args.provider.as_deref().unwrap_or("anthropic"));
+    let startup_provider = args
+        .provider
+        .as_deref()
+        .or_else(|| persisted_auth.as_ref().and_then(|a| a.provider.as_deref()))
+        .unwrap_or("anthropic");
+    let provider_api = resolve_provider_name(startup_provider);
+    let provider_display = display_provider_name(provider_api);
     let model_ids: Vec<String> = if !args.models.is_empty() {
         args.models.clone()
     } else {
@@ -56,23 +79,23 @@ async fn main() -> Result<()> {
 
     // Provider is optional at startup. If the env-backed provider isn't available,
     // bootstrap a local provider so runtime `/setkey` overrides can work without restart.
-    let provider_from_registry = pi_ai::get_provider(provider_name);
+    let provider_from_registry = pi_ai::get_provider(provider_api);
     let mut provider = provider_from_registry.clone();
     if provider.is_none() {
         let bootstrap_key = args.api_key.as_deref().unwrap_or("pi-runtime-key");
-        provider = build_fallback_provider(provider_name, bootstrap_key);
+        provider = build_fallback_provider(provider_api, bootstrap_key);
     }
 
     if provider.is_none() {
         eprintln!(
             "Warning: Provider '{}' not available. Set the API key env var to enable.",
-            provider_name
+            provider_display
         );
         eprintln!("You can still use the TUI, but you'll need to configure a provider before sending messages.");
     } else if provider_from_registry.is_none() {
         eprintln!(
             "Info: Provider '{}' initialized without env credentials. Use --api-key or /setkey <key>.",
-            provider_name
+            provider_display
         );
     }
 
@@ -137,7 +160,7 @@ async fn main() -> Result<()> {
     };
 
     let config = AgentConfig {
-        provider_api: Some(provider_name.to_string()), // Looked up from global registry on each use
+        provider_api: Some(provider_api.to_string()), // Looked up from global registry on each use
         model,
         system_prompt: Some(system_prompt),
         max_turns: 50,
@@ -247,12 +270,20 @@ async fn main() -> Result<()> {
         mode_result?;
     } else if args.mode == "rpc" {
         pi_coding_agent::modes::rpc::run_rpc_mode(Arc::clone(&agent)).await?;
-    } else {
+    } else if args.mode == "repl" {
         pi_coding_agent::modes::interactive::run_interactive_mode(
             Arc::clone(&agent),
             Arc::clone(&runtime_api_key),
         )
         .await?;
+    } else if args.mode == "text" || args.mode == "tui" {
+        pi_coding_agent::modes::tui::run_tui_mode(Arc::clone(&agent), Arc::clone(&runtime_api_key))
+            .await?;
+    } else {
+        return Err(anyhow::anyhow!(
+            "Unsupported mode '{}'. Valid values: text, tui, repl, json, rpc",
+            args.mode
+        ));
     }
 
     Ok(())
@@ -324,6 +355,19 @@ fn resolve_provider_name(name: &str) -> &str {
         "mistral" => "mistral-native",
         // Already full names or unknown
         _ => name,
+    }
+}
+
+/// Map internal API identifiers back to user-facing provider names for CLI output.
+fn display_provider_name(api: &str) -> &str {
+    match api {
+        "anthropic-messages" => "anthropic",
+        "openai-completions" => "openai",
+        "google-generative-ai" => "google",
+        "azure-open-ai-responses" | "azure-openai" => "azure",
+        "bedrock-converse-stream" | "amazon-bedrock" => "bedrock",
+        "mistral-native" => "mistral",
+        _ => api,
     }
 }
 

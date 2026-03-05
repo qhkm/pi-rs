@@ -28,6 +28,10 @@ impl Completer for CommandCompleter {
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
         let commands = vec![
+            "/model",
+            "/model ",
+            "/thinking",
+            "/thinking ",
             "/skills",
             "/skill:list",
             "/skill:clear",
@@ -68,9 +72,9 @@ pub async fn run_interactive_mode(
     agent: Arc<Agent>,
     runtime_api_key: Arc<RwLock<Option<String>>>,
 ) -> Result<()> {
-    println!("pi interactive mode (type 'exit' or '/quit' to quit)");
-    println!("[auth] use /setkey <api-key> to set a runtime API key");
-    println!("---");
+    println!("session started");
+    println!("hint: /model /thinking /providers /skills");
+    println!("hint: /setkey <api-key> to configure runtime credentials");
 
     // Use a LocalSet so we can spawn non-Send futures
     let local = LocalSet::new();
@@ -79,7 +83,10 @@ pub async fn run_interactive_mode(
 }
 
 /// The main REPL loop
-async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<String>>>) -> Result<()> {
+async fn repl_loop(
+    mut agent: Arc<Agent>,
+    runtime_api_key: Arc<RwLock<Option<String>>>,
+) -> Result<()> {
     let mut catalog = crate::skills::SkillCatalog::discover(Path::new(&agent.config.cwd))?;
     let mut active_skills = crate::skills::ActiveSkills::default();
     if !catalog.is_empty() {
@@ -158,15 +165,30 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
 
             if value.eq_ignore_ascii_case("clear") {
                 *runtime_api_key.write().unwrap_or_else(|e| e.into_inner()) = None;
+                if let Err(err) = crate::auth::clear_persisted_auth() {
+                    println!("[auth] warning: failed to clear persisted credentials: {err}");
+                } else {
+                    println!("[auth] persisted credentials cleared");
+                }
                 println!("[auth] runtime API key cleared (falling back to provider defaults)");
                 continue;
             }
 
             *runtime_api_key.write().unwrap_or_else(|e| e.into_inner()) = Some(value.to_string());
             println!("[auth] runtime API key set: {}", mask_secret(value));
-            
+
             // Try to detect provider from key format and re-register it
             let detected = detect_provider_from_key(value);
+            let persisted_provider = if is_known_provider_name(detected) {
+                Some(detected)
+            } else {
+                None
+            };
+            if let Err(err) = crate::auth::save_persisted_auth(value, persisted_provider) {
+                println!("[auth] warning: failed to persist credentials: {}", err);
+            } else {
+                println!("[auth] credentials persisted to ~/.pi/agent/auth.json");
+            }
             if detected != "unknown" {
                 match create_provider(&detected, value) {
                     Ok(new_provider) => {
@@ -180,24 +202,20 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
                             _ => Api::OpenAICompletions.to_string(),
                         };
                         pi_ai::register_provider(&api_key, new_provider.clone());
-                        
+
                         // Update the agent's provider and model
                         // Get the API identifier for the detected provider
-                        let provider_api = match detected {
-                            "anthropic" => "anthropic-messages",
-                            "openai" => "openai-completions",
-                            "google" => "google-generative-ai",
-                            "groq" => "openai-completions",
-                            "openrouter" => "openai-completions",
-                            _ => "openai-completions",
-                        };
+                        let provider_api = provider_api_for_name(detected);
                         // Update the runtime provider (works even with shared Arc)
                         agent.update_provider_api(provider_api);
                         // Also update to an appropriate default model for this provider
                         let default_model = get_default_model_for_provider(detected);
                         let model_id = default_model.id.clone();
                         agent.update_model(default_model).await;
-                        println!("[auth] provider '{}' activated with model '{}'", detected, model_id);
+                        println!(
+                            "[auth] provider '{}' activated with model '{}'",
+                            detected, model_id
+                        );
                         println!("[auth] you can now send messages without restarting");
                     }
                     Err(e) => {
@@ -207,8 +225,9 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
                     }
                 }
             } else {
-                println!("[auth] detected provider: {}. Restart with --provider <name> to use it.", 
-                    detected);
+                println!(
+                    "[auth] detected provider: unknown (try anthropic, openai, google, groq, openrouter). Restart with --provider <name> to use it."
+                );
             }
             continue;
         }
@@ -218,8 +237,10 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
         }
         if input == "/provider" {
             println!("[provider] usage: /provider <name> (or /providers to list)");
-            println!("[provider] current: {} (restart with --provider <name> to change)", 
-                agent.config.model.provider);
+            println!(
+                "[provider] current: {} (restart with --provider <name> to change)",
+                agent.config.model.provider
+            );
             continue;
         }
         if let Some(name) = input.strip_prefix("/provider ") {
@@ -227,8 +248,10 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
             if provider_name.is_empty() {
                 println!("[provider] usage: /provider <name> (or /providers to list)");
             } else {
-                println!("[provider] to switch to '{}', restart with: pi --provider {}", 
-                    provider_name, provider_name);
+                println!(
+                    "[provider] to switch to '{}', restart with: pi --provider {}",
+                    provider_name, provider_name
+                );
             }
             continue;
         }
@@ -299,7 +322,7 @@ async fn repl_loop(mut agent: Arc<Agent>, runtime_api_key: Arc<RwLock<Option<Str
     Ok(())
 }
 
-fn mask_secret(secret: &str) -> String {
+pub(crate) fn mask_secret(secret: &str) -> String {
     let chars: Vec<char> = secret.chars().collect();
     if chars.len() <= 8 {
         return "*".repeat(chars.len().max(4));
@@ -476,7 +499,7 @@ async fn handle_event(agent: &Agent, event: AgentEvent, done: &mut bool) -> Resu
 }
 
 /// Detect provider from API key format
-fn detect_provider_from_key(key: &str) -> &str {
+pub(crate) fn detect_provider_from_key(key: &str) -> &str {
     if key.starts_with("sk-ant-") {
         "anthropic"
     } else if key.starts_with("sk-or-") {
@@ -488,27 +511,51 @@ fn detect_provider_from_key(key: &str) -> &str {
     } else if key.starts_with("AIza") {
         "google"
     } else {
-        "unknown (try: anthropic, openai, google, groq, openrouter)"
+        "unknown"
     }
+}
+
+pub(crate) fn is_known_provider_name(name: &str) -> bool {
+    matches!(
+        name,
+        "anthropic" | "openai" | "google" | "groq" | "openrouter"
+    )
+}
+
+pub(crate) fn provider_api_for_name(provider_name: &str) -> &'static str {
+    match provider_name {
+        "anthropic" => "anthropic-messages",
+        "openai" => "openai-completions",
+        "google" => "google-generative-ai",
+        "groq" | "openrouter" => "openai-completions",
+        _ => "openai-completions",
+    }
+}
+
+pub(crate) fn providers_help_text() -> &'static str {
+    "[providers] available providers:
+  anthropic   - Claude (ANTHROPIC_API_KEY)
+  openai      - GPT-4, GPT-3.5 (OPENAI_API_KEY)
+  google      - Gemini (GOOGLE_API_KEY)
+  groq        - Llama, Mixtral (GROQ_API_KEY)
+  openrouter  - Multi-provider (OPENROUTER_API_KEY)
+  azure       - Azure OpenAI (AZURE_OPENAI_API_KEY)
+  bedrock     - AWS Bedrock (AWS credentials)
+
+[providers] usage: pi --provider <name>
+[providers] or: /provider <name> (shows restart command)"
 }
 
 /// Print available providers
 fn print_available_providers() {
-    println!("[providers] available providers:");
-    println!("  anthropic   - Claude (ANTHROPIC_API_KEY)");
-    println!("  openai      - GPT-4, GPT-3.5 (OPENAI_API_KEY)");
-    println!("  google      - Gemini (GOOGLE_API_KEY)");
-    println!("  groq        - Llama, Mixtral (GROQ_API_KEY)");
-    println!("  openrouter  - Multi-provider (OPENROUTER_API_KEY)");
-    println!("  azure       - Azure OpenAI (AZURE_OPENAI_API_KEY)");
-    println!("  bedrock     - AWS Bedrock (AWS credentials)");
-    println!("");
-    println!("[providers] usage: pi --provider <name>");
-    println!("[providers] or: /provider <name> (shows restart command)");
+    println!("{}", providers_help_text());
 }
 
 /// Create a provider with a specific API key
-fn create_provider(provider_name: &str, api_key: &str) -> Result<std::sync::Arc<dyn pi_ai::LLMProvider>, String> {
+pub(crate) fn create_provider(
+    provider_name: &str,
+    api_key: &str,
+) -> Result<std::sync::Arc<dyn pi_ai::LLMProvider>, String> {
     use std::sync::Arc;
 
     let provider_arc: Arc<dyn pi_ai::LLMProvider> = match provider_name {
@@ -518,7 +565,11 @@ fn create_provider(provider_name: &str, api_key: &str) -> Result<std::sync::Arc<
         }
         "openai" => {
             use pi_ai::providers::openai::OpenAIProvider;
-            Arc::new(OpenAIProvider::new(api_key.to_string(), None, Default::default()))
+            Arc::new(OpenAIProvider::new(
+                api_key.to_string(),
+                None,
+                Default::default(),
+            ))
         }
         "google" => {
             use pi_ai::providers::google::GoogleProvider;
@@ -549,10 +600,10 @@ fn create_provider(provider_name: &str, api_key: &str) -> Result<std::sync::Arc<
 }
 
 /// Get a default model for a provider
-fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
+pub(crate) fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
     use pi_ai::messages::types::{Api, Provider};
     use pi_ai::models::registry::{InputType, ModelCost};
-    
+
     match provider {
         "anthropic" => pi_ai::Model {
             id: "claude-sonnet-4-5".to_string(),
@@ -562,7 +613,12 @@ fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
             base_url: "https://api.anthropic.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 3.0, output: 15.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 200000,
             max_tokens: 8192,
             headers: None,
@@ -575,7 +631,12 @@ fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
             base_url: "https://api.openai.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 2.5, output: 10.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 2.5,
+                output: 10.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 128000,
             max_tokens: 4096,
             headers: None,
@@ -588,7 +649,12 @@ fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
             base_url: "https://generativelanguage.googleapis.com".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 1.25, output: 10.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 1000000,
             max_tokens: 8192,
             headers: None,
@@ -601,7 +667,12 @@ fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
             base_url: "https://api.groq.com/openai/v1".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 0.59, output: 0.79, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.59,
+                output: 0.79,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 128000,
             max_tokens: 4096,
             headers: None,
@@ -614,7 +685,12 @@ fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
             base_url: "https://openrouter.ai/api/v1".to_string(),
             reasoning: true,
             input_types: vec![InputType::Text, InputType::Image],
-            cost: ModelCost { input: 3.0, output: 15.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 200000,
             max_tokens: 8192,
             headers: None,
@@ -627,7 +703,12 @@ fn get_default_model_for_provider(provider: &str) -> pi_ai::Model {
             base_url: "https://api.openai.com".to_string(),
             reasoning: false,
             input_types: vec![InputType::Text],
-            cost: ModelCost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
+            cost: ModelCost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
             context_window: 128000,
             max_tokens: 4096,
             headers: None,
